@@ -1,0 +1,10 @@
+example.com.    IN    SOA   ns.example.com. hostmaster.example.com. (
+                              2003080800 ; sn = serial number
+                              172800     ; ref = refresh = 2d
+                              900        ; ret = update retry = 15m
+                              1209600    ; ex = expiry = 2w
+                              3600       ; nx = nxdomain ttl = 1h
+                              )
+; the following are also valid using @ and blank
+@               IN    SOA   ns.example.com. hostmaster.example.com.
+                IN    SOA   ns.example.com. hostmaster.example.com.

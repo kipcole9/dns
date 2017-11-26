@@ -1,0 +1,15 @@
+%{
+  "accept": {:hex, :accept, "0.3.3", "548ebb6fb2e8b0d170e75bb6123aea6ceecb0189bb1231eeadf52eac08384a97", [:rebar3], [], "hexpm"},
+  "cowboy": {:hex, :cowboy, "1.1.2", "61ac29ea970389a88eca5a65601460162d370a70018afe6f949a29dca91f3bb0", [:rebar3], [{:cowlib, "~> 1.0.2", [hex: :cowlib, optional: false]}, {:ranch, "~> 1.3.2", [hex: :ranch, optional: false]}]},
+  "cowlib": {:hex, :cowlib, "1.0.2", "9d769a1d062c9c3ac753096f868ca121e2730b9a377de23dec0f7e08b1df84ee", [:make], []},
+  "idna": {:hex, :idna, "5.0.2", "ac203208ada855d95dc591a764b6e87259cb0e2a364218f215ad662daa8cd6b4", [:rebar3], [{:unicode_util_compat, "0.2.0", [hex: :unicode_util_compat, optional: false]}]},
+  "mime": {:hex, :mime, "1.1.0", "01c1d6f4083d8aa5c7b8c246ade95139620ef8effb009edde934e0ec3b28090a", [:mix], []},
+  "plug": {:hex, :plug, "1.3.5", "7503bfcd7091df2a9761ef8cecea666d1f2cc454cbbaf0afa0b6e259203b7031", [:mix], [{:cowboy, "~> 1.0.1 or ~> 1.1", [hex: :cowboy, optional: true]}, {:mime, "~> 1.0", [hex: :mime, optional: false]}]},
+  "poolboy": {:hex, :poolboy, "1.5.1", "6b46163901cfd0a1b43d692657ed9d7e599853b3b21b95ae5ae0a777cf9b6ca8", [:rebar], []},
+  "prometheus": {:hex, :prometheus, "3.3.1", "bc680e9d7aa53cbc1b554093968718d25ba264cd936840b24278e1cb77b97225", [:mix, :rebar3], [], "hexpm"},
+  "prometheus_ex": {:hex, :prometheus_ex, "1.3.0", "eddc8cc9e384fcf20c4d42f71e539b49705bb44f95f5e1b19b967fad92c63526", [:mix], [{:prometheus, "~> 3.3", [hex: :prometheus, repo: "hexpm", optional: false]}], "hexpm"},
+  "prometheus_plugs": {:hex, :prometheus_plugs, "1.1.3", "53bb8cb31121e4491928ed56c0346a7a7571c830e9abdcd3205f09c65c0256c7", [:mix], [{:accept, "~> 0.1", [hex: :accept, repo: "hexpm", optional: false]}, {:plug, "~> 1.0", [hex: :plug, repo: "hexpm", optional: false]}, {:prometheus_ex, "~> 1.1", [hex: :prometheus_ex, repo: "hexpm", optional: false]}, {:prometheus_process_collector, "~> 1.0.0", [hex: :prometheus_process_collector, repo: "hexpm", optional: true]}], "hexpm"},
+  "prometheus_process_collector": {:hex, :prometheus_process_collector, "1.0.3", "d3188cd71b3fd3df80c0a4f9e2ff7d8ea5afe69caf0963542bf60bf21ea2d04c", [:rebar3], [{:prometheus, "~> 3.2", [hex: :prometheus, optional: false]}]},
+  "ranch": {:hex, :ranch, "1.3.2", "e4965a144dc9fbe70e5c077c65e73c57165416a901bd02ea899cfd95aa890986", [:rebar3], []},
+  "unicode_util_compat": {:hex, :unicode_util_compat, "0.2.0", "dbbccf6781821b1c0701845eaf966c9b6d83d7c3bfc65ca2b78b88b8678bfa35", [:rebar3], []},
+}
