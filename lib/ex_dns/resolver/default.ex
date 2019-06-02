@@ -1,5 +1,6 @@
 defmodule ExDns.Resolver.Default do
   alias ExDns.Message
+  alias ExDns.Message.Question
 
   # https://tools.ietf.org/html/rfc1034
   # 4.3.1. Queries and responses
@@ -240,8 +241,9 @@ defmodule ExDns.Resolver.Default do
   # would match a query name of XX.COM.
 
   # Standard query
-  def resolve(%Message{header: %Message.Header{qr: 0, oc: 0}} = message) do
-    message
+  def resolve(%Message{header: %Message.Header{qr: 0, oc: 0}}  = message) do
+    %Message{question: %Question{type: type, host: host}} = message
+    resolve(type, host)
   end
 
   # Reverse query
@@ -252,5 +254,9 @@ defmodule ExDns.Resolver.Default do
   # Status query
   def resolve(%Message{header: %Message.Header{qr: 0, oc: 2}} = message) do
     message
+  end
+
+  def resolve(:a, _host) do
+    {1,2,3,4}
   end
 end

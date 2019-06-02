@@ -26,17 +26,19 @@ defmodule ExDns.Resolver.Worker do
       {:ok, message} ->
         try do
           resolver.resolve(message)
-          |> Message.encode
+          |> Message.encode()
           |> send_udp_response(address, port, socket)
-        catch error ->
-          Logger.error "Resolver crashed: #{inspect error}"
-          Instrumenter.resolvers_crashed
+        catch
+          error ->
+            Logger.error("Resolver crashed: #{inspect(error)}")
         after
-          :poolboy.checkin(Resolver.Supervisor.pool_name, self())
+          :poolboy.checkin(Resolver.Supervisor.pool_name(), self())
         end
+
       {:error, reason} ->
-        IO.puts "ERROR: #{inspect reason}"
+        IO.puts("ERROR: #{inspect(reason)}")
     end
+
     {:noreply, resolver}
   end
 
@@ -57,6 +59,6 @@ defmodule ExDns.Resolver.Worker do
   end
 
   defp send_udp_response(answer, address, port, socket) do
-    IO.inspect "Would be sending: #{inspect answer} to socket #{inspect socket}"
+    IO.inspect("Would be sending: #{inspect(answer)} to socket #{inspect(socket)}")
   end
 end

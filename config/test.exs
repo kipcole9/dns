@@ -9,6 +9,7 @@ config :ex_dns,
 
 config :prometheus, ExDns.Prometheus.Exporter,
   path: "/metrics",
-  format: :auto, ## or :protobuf, or :text
+  ## or :protobuf, or :text
+  format: :auto,
   registry: :default,
   auth: false

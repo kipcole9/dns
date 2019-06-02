@@ -4,7 +4,7 @@ defmodule ExDns.Zone.File do
   def split_dot_not_escaped do
     reg = ~r/((?<!\\)\.)/
     s = "kip\\.cole@sap.com"
-    IO.puts s
+    IO.puts(s)
     String.split(s, reg)
   end
 
@@ -13,8 +13,8 @@ defmodule ExDns.Zone.File do
     |> remove_comments
     |> flatten_parentheses
     |> append_newline
-    |> String.to_charlist
-    |> :zone_lexer.string
+    |> String.to_charlist()
+    |> :zone_lexer.string()
   end
 
   def parse({:ok, tokens, _lines}) do
@@ -27,8 +27,7 @@ defmodule ExDns.Zone.File do
 
   def parse(string) when is_binary(string) do
     with {:ok, tokens, _end_line} <- tokenize(string),
-      {:ok, parsed} <- :zone_parser.parse(tokens)
-    do
+         {:ok, parsed} <- :zone_parser.parse(tokens) do
       parsed
     else
       error ->
@@ -38,14 +37,13 @@ defmodule ExDns.Zone.File do
 
   def process(string) when is_binary(string) do
     with {:ok, tokens, _end_line} <- tokenize(string),
-      {:ok, parsed} <- :zone_parser.parse(tokens),
-      {:ok, zone} <- expand_origin_references(parsed),
-      {:ok, zone} <- expand_name_and_ttl_references(zone),
-      {:ok, zone} <- build_records(zone)
-    do
+         {:ok, parsed} <- :zone_parser.parse(tokens),
+         {:ok, zone} <- expand_origin_references(parsed),
+         {:ok, zone} <- expand_name_and_ttl_references(zone),
+         {:ok, zone} <- build_records(zone) do
       zone
     else
-      {:error, _errors} =  error ->
+      {:error, _errors} = error ->
         error
     end
   end
@@ -54,33 +52,44 @@ defmodule ExDns.Zone.File do
   # name
   defp expand_origin_references({directives, records}) do
     origin = directives[:origin]
-    updated_records = Enum.map(records, fn {_type, _args} = record ->
-      expand_origin_reference(record, origin)
-    end)
+
+    updated_records =
+      Enum.map(records, fn {_type, _args} = record ->
+        expand_origin_reference(record, origin)
+      end)
+
     zone = {directives, updated_records}
     {:ok, zone}
   end
 
   # When there is no origin so any references are invalid
   def expand_origin_reference({_type, args} = record, nil) do
-    origin_refs? = Enum.any? args, fn
-      {_key, {:origin_ref, _}} -> true
-      _other -> false
-    end
+    origin_refs? =
+      Enum.any?(args, fn
+        {_key, {:origin_ref, _}} -> true
+        _other -> false
+      end)
 
     if origin_refs? do
-      add_error(record, "An origin reference was found but the zone file doesn't contain an origin directive")
+      add_error(
+        record,
+        "An origin reference was found but the zone file doesn't contain an origin directive"
+      )
     else
       record
     end
   end
 
   def expand_origin_reference({type, args}, origin) do
-    new_record = Enum.map args, fn
-      {key, {:origin_ref, _}} -> {key, origin}
-      other ->
-        other
-    end
+    new_record =
+      Enum.map(args, fn
+        {key, {:origin_ref, _}} ->
+          {key, origin}
+
+        other ->
+          other
+      end)
+
     {type, new_record}
   end
 
@@ -97,20 +106,25 @@ defmodule ExDns.Zone.File do
   defp expand_name_and_ttl_references({directives, records}) do
     origin = directives[:origin]
     ttl = directives[:ttl_default]
-    expanded = Enum.reduce records, %{origin: origin, last_name: origin, ttl: ttl, records: []},
-      fn ({type, args}, state)  ->
+
+    expanded =
+      Enum.reduce(records, %{origin: origin, last_name: origin, ttl: ttl, records: []}, fn {type,
+                                                                                            args},
+                                                                                           state ->
         name = args[:name] || state.last_name
         expanded_name = expand_name(name, state.origin)
         expanded_server = expand_name(args[:server], origin)
 
-        new_record = args
-        |> Keyword.put(:name, expanded_name)
-        |> Keyword.put(:ttl, expand_ttl(args[:ttl], ttl))
-        |> conditionally_put(:server, expanded_server)
+        new_record =
+          args
+          |> Keyword.put(:name, expanded_name)
+          |> Keyword.put(:ttl, expand_ttl(args[:ttl], ttl))
+          |> conditionally_put(:server, expanded_server)
 
         records = state.records ++ [{type, new_record}]
         %{state | records: records, last_name: name}
-    end
+      end)
+
     {:ok, {directives, expanded.records}}
   end
 
@@ -166,17 +180,20 @@ defmodule ExDns.Zone.File do
   # under the :error key
   @module ExDns.Resource
   defp build_records({directives, records} = zone) do
-    resources = Enum.map records, fn {type, args} ->
-      module_name = type
-      |> Atom.to_string
-      |> String.upcase
+    resources =
+      Enum.map(records, fn {type, args} ->
+        module_name =
+          type
+          |> Atom.to_string()
+          |> String.upcase()
 
-      module = Module.concat(@module, module_name)
-      case apply(module, :new, [args]) do
-        {:ok, resource} -> resource
-        {:error, resource} -> resource
-      end
-    end
+        module = Module.concat(@module, module_name)
+
+        case apply(module, :new, [args]) do
+          {:ok, resource} -> resource
+          {:error, resource} -> resource
+        end
+      end)
 
     if errors?({directives, resources}) do
       {:error, {directives, resources}}
@@ -193,10 +210,10 @@ defmodule ExDns.Zone.File do
   end
 
   def errors?({_directives, records}) do
-    Enum.any? records, fn
+    Enum.any?(records, fn
       {_type, _args} -> true
       _ -> false
-    end
+    end)
   end
 
   def errors(%ExDns.Zone{} = _zone) do
@@ -204,10 +221,10 @@ defmodule ExDns.Zone.File do
   end
 
   def errors({_directives, records}) do
-    Enum.filter records, fn
+    Enum.filter(records, fn
       {_type, _args} -> true
       _ -> false
-    end
+    end)
   end
 
   # Comments are not passed through to the lexer or parser
@@ -234,6 +251,7 @@ defmodule ExDns.Zone.File do
         [target, rest] = String.split(start, ")", parts: 2)
         replaced = left <> String.replace(target, "\n", "", global: true) <> rest
         flatten_parentheses(replaced)
+
       [completed_replacement] ->
         completed_replacement
     end

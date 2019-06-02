@@ -2,11 +2,10 @@ defmodule ExDns.Listener.UDP do
   use GenServer
   require Logger
 
-  alias ExDns.Prometheus.Instrumenter
   alias ExDns.Resolver
 
   @read_packets 1000
-  @active       100
+  @active 100
 
   @doc """
   Resolves the DNS request.
@@ -25,12 +24,12 @@ defmodule ExDns.Listener.UDP do
         try do
           GenServer.cast(worker, {:udp_query, address, port, socket, bin})
         after
-          :poolboy.checkin(Resolver.Supervisor.pool_name, worker)
+          :poolboy.checkin(Resolver.Supervisor.pool_name(), worker)
           {:noreply, state}
         end
+
       {:error, {message, _pool_status}} = error ->
-        Logger.error message
-        Instrumenter.packet_dropped(error)
+        Logger.error(message)
         {:noreply, state}
     end
   end
@@ -42,10 +41,12 @@ defmodule ExDns.Listener.UDP do
     :gen_udp.close(socket)
   end
 
-  def start_link(%{inet_family: inet_family, address: address, port: port,
-        socket_options: socket_options} = args) do
+  def start_link(
+        %{inet_family: inet_family, address: address, port: port, socket_options: socket_options} =
+          args
+      ) do
     name = Map.get(args, :name) || name_from_module(__MODULE__, inet_family)
-    GenServer.start_link(__MODULE__, [inet_family, address, port, socket_options], [name: name])
+    GenServer.start_link(__MODULE__, [inet_family, address, port, socket_options], name: name)
   end
 
   def init([inet_family, address, port, nil]) do
@@ -53,9 +54,11 @@ defmodule ExDns.Listener.UDP do
   end
 
   def init([inet_family, address, port, socket_options]) do
-    Logger.info "Starting UDP server for #{inspect inet_family} on address " <>
-                "#{:inet_parse.ntoa(address)} and port #{inspect port} with options " <>
-                "#{inspect socket_options}"
+    Logger.info(
+      "Starting UDP server for #{inspect(inet_family)} on address " <>
+        "#{:inet_parse.ntoa(address)} and port #{inspect(port)} with options " <>
+        "#{inspect(socket_options)}"
+    )
 
     {:ok, socket} = open_socket(inet_family, address, port, socket_options)
     {:ok, %{address: address, port: port, socket: socket}}
@@ -104,44 +107,51 @@ defmodule ExDns.Listener.UDP do
 
   def get_worker do
     try do
-      pool_name = Resolver.Supervisor.pool_name
-      pid = :poolboy.checkout(pool_name, true, ExDns.checkout_timeout)
-      Instrumenter.resolvers_checked_out(:poolboy.status(pool_name))
+      pool_name = Resolver.Supervisor.pool_name()
+      pid = :poolboy.checkout(pool_name, true, ExDns.checkout_timeout())
       {:ok, pid}
-    catch :exit, _error ->
-      {:error, {"No more workers are available. Packet dropped", Resolver.Supervisor.pool_status}}
+    catch
+      :exit, _error ->
+        {:error,
+         {"No more workers are available. Packet dropped", Resolver.Supervisor.pool_status()}}
     end
   end
 
   defp open_socket(inet_family, address, port, socket_options) do
     udp_options = get_udp_options(inet_family, address, socket_options)
+
     case :gen_udp.open(port, udp_options) do
       {:ok, socket} ->
-        Logger.info("UDP server #{:inet_parse.ntoa(address)} opened socket #{inspect socket}")
+        Logger.info("UDP server #{:inet_parse.ntoa(address)} opened socket #{inspect(socket)}")
         {:ok, socket}
+
       {:error, :eacces} ->
-        Logger.error("Failed to open UDP socket on address #{:inet_parse.ntoa(address)} and " <>
-                     "port #{inspect port}. Need to run as sudo?")
+        Logger.error(
+          "Failed to open UDP socket on address #{:inet_parse.ntoa(address)} and " <>
+            "port #{inspect(port)}. Need to run as sudo?"
+        )
+
         {:error, :eacces}
+
       {:error, other_error} ->
-        raise ArgumentError, "Couldn't open the socket: #{inspect other_error}"
+        raise ArgumentError, "Couldn't open the socket: #{inspect(other_error)}"
     end
   end
 
   defp get_udp_options(inet_family, address, socket_options) do
     [
       inet_family,
-      {:reuseaddr, true}, :binary,
+      {:reuseaddr, true},
+      :binary,
       {:active, @active},
       {:read_packets, @read_packets},
       {:ip, address},
-      {:recbuf, ExDns.udp_receive_buffer_size} |
-      socket_options
+      {:recbuf, ExDns.udp_receive_buffer_size()}
+      | socket_options
     ]
   end
 
   defp name_from_module(module, inet_family) when is_atom(module) and is_atom(inet_family) do
     Module.concat(module, inet_family)
   end
-
 end

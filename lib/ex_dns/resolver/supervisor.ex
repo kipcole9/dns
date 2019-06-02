@@ -14,6 +14,7 @@ defmodule ExDns.Resolver.Supervisor do
     children = [
       :poolboy.child_spec(@pool_name, poolboy_config(), %{resolver: ExDns.resolver_module()})
     ]
+
     supervise(children, strategy: :one_for_one)
   end
 
@@ -34,8 +35,4 @@ defmodule ExDns.Resolver.Supervisor do
   def pool_status do
     :poolboy.status(pool_name())
   end
-
 end
-
-
-

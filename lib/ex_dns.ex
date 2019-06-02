@@ -3,11 +3,11 @@ defmodule ExDns do
   The main DNS parameters are [defined by IANA](https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-12)
   """
 
-  @default_resolver_module     ExDns.Resolver
-  @default_pool_size           50
-  @default_pool_overflow_size  10
-  @default_pool_timeout        1000
-  @default_listener_port       53
+  @default_resolver_module ExDns.Resolver
+  @default_pool_size 50
+  @default_pool_overflow_size 10
+  @default_pool_timeout 1000
+  @default_listener_port 53
   @default_receive_buffer_size 1024 * 1024
 
   def pool_size() do
@@ -19,7 +19,7 @@ defmodule ExDns do
   end
 
   def resolver_module() do
-    Application.get_env(:ex_dns, :resolver_module) || @default_resolver_module
+    Application.get_env(:ex_dns, :resolver) || @default_resolver_module
   end
 
   def checkout_timeout() do
@@ -35,6 +35,6 @@ defmodule ExDns do
   end
 
   def pool_status do
-    :poolboy.status(ExDns.Resolver.Supervisor.pool_name)
+    :poolboy.status(ExDns.Resolver.Supervisor.pool_name())
   end
 end

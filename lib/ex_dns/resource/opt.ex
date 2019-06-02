@@ -125,6 +125,4 @@ defmodule ExDns.Resource.OPT do
   #    Z
   #       Set to zero by senders and ignored by receivers, unless modified
   #       in a subsequent specification.
-
-
 end

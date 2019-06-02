@@ -8,7 +8,7 @@ defmodule ExDns.Resource.SRV do
     # |> validate_class(:class, :internet)
     |> validate_integer(:priority)
     |> validate_integer(:weight)
-    |> validate_class(:port)
+    |> validate_integer(:port)
     |> validate_domain_name(:target)
     |> structify_if_valid(__MODULE__)
   end

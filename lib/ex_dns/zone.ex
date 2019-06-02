@@ -17,5 +17,4 @@ defmodule ExDns.Zone do
     end)
     |> hd
   end
-
 end

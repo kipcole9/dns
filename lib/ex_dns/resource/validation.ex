@@ -66,11 +66,11 @@ defmodule ExDns.Resource.Validation do
 
   def type_from_module(module) do
     module
-    |> Atom.to_string
+    |> Atom.to_string()
     |> String.split(".")
-    |> Enum.reverse
+    |> Enum.reverse()
     |> hd
-    |> String.downcase
-    |> String.to_existing_atom
+    |> String.downcase()
+    |> String.to_existing_atom()
   end
 end

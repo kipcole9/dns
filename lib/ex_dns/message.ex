@@ -1,10 +1,11 @@
 defmodule ExDns.Message do
   alias ExDns.Message
   alias ExDns.Message.{Header, Question, Answer, Authority, Additional}
+  require Logger
 
-  @keys [:header, :questions, :answer, :authority, :additional]
+  @keys [:header, :question, :answer, :authority, :additional]
   @enforce_keys @keys
-  defstruct  @keys
+  defstruct @keys
 
   # 4. MESSAGES
   #
@@ -42,17 +43,25 @@ defmodule ExDns.Message do
   # which relate to the query, but are not strictly answers for the
   # question.
   def decode(message) do
-    with {:ok, header, rest}   <- Header.decode(message),
-      {:ok, questions, rest}   <- Question.decode(header, rest, message),
-      {:ok, answer, rest}      <- Answer.decode(header, rest, message),
-      {:ok, authority, rest}   <- Authority.decode(header, rest, message),
-      {:ok, additional, _rest}  <- Additional.decode(header, rest, message)
-    do
-      {:ok, %Message{header: header, questions: questions, answer: answer,
-               authority: authority, additional: additional}}
-    else
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, header, rest} <- Header.decode(message),
+         {:ok, question, rest} <- Question.decode(header, rest),
+         {:ok, answer, rest} <- Answer.decode(header, rest, message),
+         {:ok, authority, rest} <- Authority.decode(header, rest, message),
+         {:ok, additional, _rest} <- Additional.decode(header, rest, message) do
+      message = %Message{
+        header: header,
+        question: question,
+        answer: answer,
+        authority: authority,
+        additional: additional
+      }
+      Logger.debug "Message received"
+      Logger.debug "  Header: #{inspect header}"
+      Logger.debug "  Question: #{inspect question}"
+      Logger.debug "  Answer: #{inspect answer}"
+      Logger.debug "  Authority: #{inspect authority}"
+      Logger.debug "  Additional: #{inspect additional}"
+      {:ok, message}
     end
   end
 
@@ -66,8 +75,6 @@ defmodule ExDns.Message do
   def count(%Message{header: %Message.Header{qr: 0, qc: count}}), do: count
   def count(%Message{header: %Message.Header{qr: 1}}), do: {:error, :not_a_query}
   def count(_), do: {:error, :not_a_message}
-
-
 
   # NAME            a domain name represented as a sequence of labels, where
   #                 each label consists of a length octet followed by that
@@ -179,9 +186,10 @@ defmodule ExDns.Message do
   # more labels
 
   def decode_name(binary, message \\ <<>>)
-  def decode_name(<< 0::size(2), len::size(6), domain::bytes-size(len), rest::binary >>, message)
-  when len > 0 do
-    decode_name(rest, domain, message)
+
+  def decode_name(<<0::size(2), len::size(6), name::bytes-size(len), rest::binary>>, message)
+      when len > 0 do
+    decode_name(rest, [name], message)
   end
 
   def decode_name(_section, _message) do
@@ -190,29 +198,29 @@ defmodule ExDns.Message do
 
   # A zero byte signifies the end of the labels for a name and,
   # in this case, that there is no more content in the message
-  def decode_name(<< 0::size(8)>>, name, _message) do
+  def decode_name(<<0::size(8)>>, name, _message) do
     {:ok, decode_punycode(name)}
   end
 
   # A zero byte signifies the end of the labels for a name and,
   # in this case, that there is more content in the message
-  def decode_name(<< 0::size(8), rest::binary >>, name, _message) do
+  def decode_name(<<0::size(8), rest::binary>>, name, _message) do
     {:ok, decode_punycode(name), rest}
   end
 
   # Here we have the nth label for a name (ie a label but not the first one)
   # which we concatentate with the labels accumulated so far
-  def decode_name(<< 0::size(2), len::size(6), domain::bytes-size(len), rest::binary >>, name, message)
-  when len > 0 do
-    decode_name(rest, "#{name}.#{domain}", message)
+  def decode_name(<<0::size(2), len::size(6), domain::bytes-size(len), rest::binary>>, name, message)
+      when len > 0 do
+    decode_name(rest, [domain | name], message)
   end
 
   # This is a compression target that specified an 0-based offset from the start
   # of the message (including the header) where the next labels are found
-  def decode_name(<< 0b11::size(2), offset::size(14), rest::binary >>, name, message) do
-    << _offset::bytes-size(offset), indirect_domain_start::binary >> = message
+  def decode_name(<<0b11::size(2), offset::size(14), rest::binary>>, name, message) do
+    <<_offset::bytes-size(offset), indirect_domain_start::binary>> = message
     {:ok, indirect_domain, _} = decode_name(indirect_domain_start, message)
-    decode_name(rest, "#{name}.#{indirect_domain}", message)
+    decode_name(rest, [indirect_domain | name], message)
   end
 
   @doc """
@@ -221,10 +229,10 @@ defmodule ExDns.Message do
   def encode_name(name) when is_binary(name) do
     name
     |> String.split(".")
-    |> Enum.map(fn(part) -> << String.length(part)::size(8), part::binary >> end)
+    |> Enum.map(fn part -> <<String.length(part)::size(8), part::binary>> end)
     |> Enum.join(<<>>)
     |> encode_punycode
-    |> Kernel.<>(<< 0::size(8) >>)
+    |> Kernel.<>(<<0::size(8)>>)
   end
 
   @doc """
@@ -233,9 +241,9 @@ defmodule ExDns.Message do
   """
   def encode_punycode(name) when is_binary(name) do
     name
-    |> :xmerl_ucs.from_utf8
-    |> :idna.to_ascii
-    |> List.to_string
+    |> :xmerl_ucs.from_utf8()
+    |> :idna.to_ascii()
+    |> List.to_string()
   end
 
   @doc """
@@ -243,10 +251,11 @@ defmodule ExDns.Message do
   potentially UTF-8 format in support of internationalized
   domain names
   """
-  def decode_punycode(name) when is_binary(name) do
-    name
-    |> String.to_charlist
-    |> :idna.from_ascii
-    |> List.to_string
+  def decode_punycode(name) when is_list(name) do
+    Enum.map name, fn n ->
+      n
+      |> String.to_charlist()
+      |> :idna.from_ascii()
+    end
   end
 end

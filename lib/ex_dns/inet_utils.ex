@@ -8,14 +8,14 @@ defmodule ExDns.Inet.Ipv4 do
 
   def to_integer(ipv4) when is_binary(ipv4) do
     ipv4
-    |> String.to_charlist
+    |> String.to_charlist()
     |> to_integer
   end
 
   def to_integer(ipv4) when is_list(ipv4) do
     case :inet_parse.address(ipv4) do
       {:ok, ip} -> to_integer(ip)
-      {:error, _} -> {:error, "Invalid IPv4 address: #{inspect ipv4}"}
+      {:error, _} -> {:error, "Invalid IPv4 address: #{inspect(ipv4)}"}
     end
   end
 
@@ -34,20 +34,24 @@ defmodule ExDns.Inet.Ipv4 do
   end
 
   def to_tuple(integer) when is_integer(integer) do
-    a = integer
-    |> band(0b11111111000000000000000000000000)
-    |> bsr(24)
+    a =
+      integer
+      |> band(0b11111111000000000000000000000000)
+      |> bsr(24)
 
-    b = integer
-    |> band(0b00000000111111110000000000000000)
-    |> bsr(16)
+    b =
+      integer
+      |> band(0b00000000111111110000000000000000)
+      |> bsr(16)
 
-    c = integer
-    |> band(0b00000000000000001111111100000000)
-    |> bsr(8)
+    c =
+      integer
+      |> band(0b00000000000000001111111100000000)
+      |> bsr(8)
 
-    d = integer
-    |> band(0b00000000000000000000000011111111)
+    d =
+      integer
+      |> band(0b00000000000000000000000011111111)
 
     {a, b, c, d}
   end
@@ -55,7 +59,7 @@ defmodule ExDns.Inet.Ipv4 do
   def to_tuple(string) when is_binary(string) do
     case :inet_parse.address(string) do
       {:ok, ip} -> ip
-      {:error, _} -> {:error, "Invalid IPv4 address: #{inspect string}"}
+      {:error, _} -> {:error, "Invalid IPv4 address: #{inspect(string)}"}
     end
   end
 end
