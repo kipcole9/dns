@@ -129,11 +129,13 @@ defmodule ExDns.Integration.DigTest do
 
   defp dig(args, options \\ []) when is_list(args) do
     edns_flag = if Keyword.get(options, :edns?, false), do: "+edns=0", else: "+noedns"
+    transport_flag = if Keyword.get(options, :tcp?, false), do: "+tcp", else: "+notcp"
 
     {output, _exit} =
       System.cmd(
         "dig",
-        ["@" <> @server, "-p", "#{@port}", edns_flag, "+tries=1", "+time=2"] ++ args,
+        ["@" <> @server, "-p", "#{@port}", edns_flag, transport_flag, "+tries=1", "+time=2"] ++
+          args,
         stderr_to_stdout: true
       )
 
@@ -221,6 +223,99 @@ defmodule ExDns.Integration.DigTest do
       # NXDOMAIN with aa=0 because we don't own the zone.
       assert output =~ "status: NXDOMAIN"
       refute output =~ ~r/flags:[^;]*aa/
+    end
+  end
+
+  describe "AXFR (zone transfer over TCP)" do
+    test "dig axfr returns the SOA twice and every record in between" do
+      output = dig(["AXFR", "example.test"], tcp?: true)
+      # SOA appears at the top and at the bottom (RFC 5936 §2.2)
+      soa_lines = Regex.scan(~r/example\.test\.\s+\d+\s+IN\s+SOA/, output)
+      assert length(soa_lines) >= 2
+      assert output =~ "198.51.100.7"
+      assert output =~ "mail.example.test"
+    end
+
+    test "dig axfr against a non-apex name is REFUSED" do
+      output = dig(["AXFR", "www.example.test"], tcp?: true)
+      assert output =~ "Transfer failed."
+    end
+  end
+
+  describe "TC flag fallback for oversized UDP responses" do
+    setup do
+      # Cram many A records into a single name in a dedicated zone so
+      # we don't perturb other test fixtures.
+      records =
+        for i <- 1..40 do
+          %ExDns.Resource.A{
+            name: "many.big.test",
+            ttl: 60,
+            class: :internet,
+            ipv4: {198, 51, 100, rem(i, 254) + 1}
+          }
+        end
+
+      Storage.put_zone(
+        "big.test",
+        [
+          %SOA{
+            name: "big.test",
+            ttl: 86_400,
+            class: :internet,
+            mname: "ns.big.test",
+            email: "admin.big.test",
+            serial: 1,
+            refresh: 7200,
+            retry: 3600,
+            expire: 1_209_600,
+            minimum: 3600
+          },
+          %NS{name: "big.test", ttl: 86_400, class: :internet, server: "ns.big.test"},
+          %A{name: "ns.big.test", ttl: 86_400, class: :internet, ipv4: {198, 51, 100, 53}}
+          | records
+        ]
+      )
+
+      on_exit(fn -> Storage.delete_zone("big.test") end)
+      :ok
+    end
+
+    test "UDP response over 512 bytes returns TC=1 with empty answer" do
+      # +ignore tells dig NOT to auto-retry over TCP when it sees TC=1;
+      # otherwise the retry's response masks the original truncation.
+      output = dig(["+bufsize=512", "+ignore", "many.big.test", "A"])
+      assert output =~ ~r/flags:[^;]*tc/
+      assert output =~ ~r/ANSWER:\s*0/
+    end
+
+    test "TCP retry returns the full answer set" do
+      output = dig(["+bufsize=512", "many.big.test", "A"], tcp?: true)
+      refute output =~ ~r/flags:[^;]*tc/
+      assert output =~ ~r/ANSWER:\s*40/
+    end
+  end
+
+  describe "TCP transport (dig +tcp / RFC 7766)" do
+    test "answers an A query over TCP" do
+      output = dig(["+short", "example.test", "A"], tcp?: true)
+      assert output =~ "198.51.100.7"
+    end
+
+    test "AA flag set on TCP responses" do
+      output = dig(["example.test", "A"], tcp?: true)
+      assert output =~ ~r/flags:[^;]*aa/
+    end
+
+    test "TCP path supports EDNS0" do
+      output = dig(["example.test", "A"], tcp?: true, edns?: true)
+      assert output =~ "EDNS:"
+      assert output =~ "198.51.100.7"
+    end
+
+    test "TCP path returns NXDOMAIN" do
+      output = dig(["missing.example.test", "A"], tcp?: true)
+      assert output =~ "status: NXDOMAIN"
     end
   end
 

@@ -34,6 +34,9 @@ defmodule ExDns.Mixfile do
       {:poolboy, "~> 1.5"},
       {:idna, "~> 6.1"},
       {:mime, "~> 2.0"},
+      {:thousand_island, "~> 1.3"},
+      {:bandit, "~> 1.6"},
+      {:plug, "~> 1.16"},
       {:ex_doc, "~> 0.34", only: [:dev], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}

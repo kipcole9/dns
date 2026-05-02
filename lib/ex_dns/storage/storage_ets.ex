@@ -358,6 +358,33 @@ defmodule ExDns.Storage.ETS do
   end
 
   @doc """
+  Returns every resource record stored in the zone with the given apex,
+  ordered with the SOA first.
+
+  Used by AXFR to stream the zone over TCP.
+
+  ### Returns
+
+  * `{:ok, [record, …]}` when the zone is loaded.
+  * `{:error, :not_loaded}` when no zone is loaded for `apex`.
+  """
+  @spec dump_zone(binary()) :: {:ok, [struct()]} | {:error, :not_loaded}
+  def dump_zone(apex) when is_binary(apex) do
+    init()
+    apex = normalize(apex)
+
+    case :ets.lookup(@index_table, apex) do
+      [{^apex, table}] ->
+        all_records = :ets.foldl(fn {{_name, _type}, rrs}, acc -> rrs ++ acc end, [], table)
+        {soa, rest} = Enum.split_with(all_records, &match?(%ExDns.Resource.SOA{}, &1))
+        {:ok, soa ++ rest}
+
+      [] ->
+        {:error, :not_loaded}
+    end
+  end
+
+  @doc """
   Returns the closest delegation point at-or-above `qname` within the
   zone responsible for `qname`.
 

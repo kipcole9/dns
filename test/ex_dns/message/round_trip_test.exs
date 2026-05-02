@@ -100,6 +100,50 @@ defmodule ExDns.Message.RoundTripTest do
       assert decoded.additional == additionals
     end
 
+    test "encode_for_udp/2 truncates and sets TC=1 when the response exceeds the budget" do
+      records =
+        for i <- 1..50 do
+          %ExDns.Resource.A{
+            name: "example.com",
+            ttl: 60,
+            class: :in,
+            ipv4: {192, 0, 2, rem(i, 255)}
+          }
+        end
+
+      message = %Message{
+        header: blank_header(qr: 1, aa: 1, qc: 1, anc: length(records)),
+        question: %Message.Question{host: "example.com", type: :a, class: :in},
+        answer: records,
+        authority: [],
+        additional: []
+      }
+
+      bytes = Message.encode_for_udp(message, 512)
+      assert byte_size(bytes) <= 512
+      assert {:ok, decoded} = Message.decode(bytes)
+      assert decoded.header.tc == 1
+      assert decoded.answer == []
+      assert decoded.question == message.question
+    end
+
+    test "encode_for_udp/2 leaves a fitting response untouched (TC=0)" do
+      message = %Message{
+        header: blank_header(qr: 1, aa: 1, qc: 1, anc: 1),
+        question: %Message.Question{host: "example.com", type: :a, class: :in},
+        answer: [
+          %ExDns.Resource.A{name: "example.com", ttl: 60, class: :in, ipv4: {192, 0, 2, 1}}
+        ],
+        authority: [],
+        additional: []
+      }
+
+      bytes = Message.encode_for_udp(message, 512)
+      {:ok, decoded} = Message.decode(bytes)
+      assert decoded.header.tc == 0
+      assert length(decoded.answer) == 1
+    end
+
     test "owner-name compression saves bytes when the same owner repeats" do
       # 10 A records with the same owner. Without compression the owner
       # is repeated 11 times (1 question + 10 answers) and would dominate

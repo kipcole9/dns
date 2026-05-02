@@ -64,7 +64,28 @@ defmodule ExDns.Resolver.Default do
     set_response(message, [], rcode: 4, aa: 0, authority: [])
   end
 
-  # Anything else (status, update, notify, …) — NOTIMP for now.
+  # NOTIFY (RFC 1996, opcode 4) — acknowledge with NOERROR. AA is set
+  # if we are authoritative for the named zone. We do not currently
+  # trigger a refresh because we have no secondary-zone configuration;
+  # that's a follow-up.
+  def resolve(%Message{header: %Header{qr: 0, oc: 4}, question: question} = message) do
+    require Logger
+
+    aa =
+      case question do
+        %Question{host: host} ->
+          Logger.info("Received NOTIFY for #{inspect(host)}")
+          if Storage.find_zone(host), do: 1, else: 0
+
+        _ ->
+          Logger.info("Received NOTIFY (no question section)")
+          0
+      end
+
+    set_response(message, [], rcode: 0, aa: aa, authority: [])
+  end
+
+  # Anything else (status, update, …) — NOTIMP for now.
   def resolve(%Message{header: %Header{qr: 0}} = message) do
     set_response(message, [], rcode: 4, aa: 0, authority: [])
   end
@@ -85,6 +106,40 @@ defmodule ExDns.Resolver.Default do
 
       _ ->
         answer_query_authoritative(message, question)
+    end
+  end
+
+  # IXFR (RFC 1995) — we do not maintain a journal of changes, so we
+  # always fall back to a full AXFR per RFC 1995 §2 ("If the server
+  # cannot provide an incremental zone transfer, it should respond with
+  # the full zone").
+  defp answer_query_authoritative(message, %Question{type: :ixfr} = question) do
+    answer_query_authoritative(message, %{question | type: :axfr})
+  end
+
+  defp answer_query_authoritative(message, %Question{host: qname, type: :axfr}) do
+    qname = String.downcase(qname, :ascii) |> String.trim_trailing(".")
+
+    case Storage.find_zone(qname) do
+      ^qname ->
+        case Storage.dump_zone(qname) do
+          {:ok, [%ExDns.Resource.SOA{} = soa | _] = records} ->
+            # RFC 5936 §2.2: AXFR response is SOA, all RRs, SOA.
+            answer = Enum.map(records ++ [soa], &normalize_class/1)
+            set_response(message, answer, rcode: 0, aa: 1, authority: [])
+
+          {:ok, _} ->
+            # Zone exists but has no SOA — refuse.
+            set_response(message, [], rcode: 5, aa: 0, authority: [])
+
+          {:error, :not_loaded} ->
+            set_response(message, [], rcode: 5, aa: 0, authority: [])
+        end
+
+      _ ->
+        # AXFR can only be served for a zone we are authoritative for at
+        # the apex; otherwise REFUSED.
+        set_response(message, [], rcode: 5, aa: 0, authority: [])
     end
   end
 

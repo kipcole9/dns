@@ -282,6 +282,7 @@ defmodule ExDns.Resource do
   def decode_type(64), do: :svcb
   def decode_type(65), do: :https
   def decode_type(99), do: :spf
+  def decode_type(251), do: :ixfr
   def decode_type(252), do: :axfr
   def decode_type(253), do: :mailb
   def decode_type(254), do: :maila
@@ -364,6 +365,7 @@ defmodule ExDns.Resource do
   def type_from(:svcb), do: 64
   def type_from(:https), do: 65
   def type_from(:spf), do: 99
+  def type_from(:ixfr), do: 251
   def type_from(:axfr), do: 252
   def type_from(:mailb), do: 253
   def type_from(:maila), do: 254

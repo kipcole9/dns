@@ -151,6 +151,53 @@ defmodule ExDns.Message do
   end
 
   @doc """
+  Encodes `message` for UDP transport, applying RFC 1035 truncation
+  when the encoded form would exceed `budget` bytes.
+
+  When truncation kicks in, the returned message preserves the header
+  (with TC=1), the question, and the additional section's OPT record
+  (if any), but the answer and authority sections are dropped. Clients
+  observing TC=1 are expected to retry the query over TCP.
+
+  ### Arguments
+
+  * `message` is the response `%ExDns.Message{}`.
+
+  * `budget` is the maximum number of bytes allowed on the wire (512
+    by default per RFC 1035 §2.3.4; larger when the client advertised
+    a bigger payload size via EDNS0).
+
+  ### Returns
+
+  * A binary holding the wire-format message that fits within `budget`.
+
+  """
+  @spec encode_for_udp(t(), pos_integer()) :: binary()
+
+  def encode_for_udp(%Message{} = message, budget) when is_integer(budget) and budget > 0 do
+    bytes = encode(message)
+
+    if byte_size(bytes) <= budget do
+      bytes
+    else
+      truncated = truncate_for_udp(message)
+      encode(truncated)
+    end
+  end
+
+  defp truncate_for_udp(%Message{header: header, additional: additional} = message) do
+    opt_records = Enum.filter(additional || [], &match?(%ExDns.Resource.OPT{}, &1))
+
+    %Message{
+      message
+      | header: %Message.Header{header | tc: 1, anc: 0, auc: 0, adc: length(opt_records)},
+        answer: [],
+        authority: [],
+        additional: opt_records
+    }
+  end
+
+  @doc """
   Returns a count of the number of questions in this query
   """
   def count(%Message{header: %Message.Header{qr: 0, qc: count}}), do: count

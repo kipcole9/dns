@@ -10,11 +10,18 @@ defmodule ExDns.Application do
     # tree comes up.
     ExDns.Storage.ETS.init()
 
-    children = [
-      {ExDns.Listener.UDP, listener_options(:inet)},
-      Supervisor.child_spec({ExDns.Listener.UDP, listener_options(:inet6)}, id: ExDns.Listener.UDP6),
-      ExDns.Resolver.Supervisor
-    ]
+    port = ExDns.listener_port()
+
+    children =
+      [
+        {ExDns.Listener.UDP, listener_options(:inet)},
+        Supervisor.child_spec({ExDns.Listener.UDP, listener_options(:inet6)},
+          id: ExDns.Listener.UDP6
+        ),
+        {ExDns.Listener.TCP,
+         port: port, transport_options: [ip: {127, 0, 0, 1}, reuseaddr: true]},
+        ExDns.Resolver.Supervisor
+      ] ++ doh_children()
 
     opts = [strategy: :one_for_one, name: ExDns.Supervisor]
 
@@ -80,6 +87,14 @@ defmodule ExDns.Application do
       port: ExDns.listener_port(),
       socket_options: socket_options()
     }
+  end
+
+  # Returns the DoH child spec when `:ex_dns, :doh` is configured.
+  defp doh_children do
+    case Application.get_env(:ex_dns, :doh) do
+      nil -> []
+      doh_options when is_list(doh_options) -> [{ExDns.Listener.DoH, doh_options}]
+    end
   end
 
   def socket_options do

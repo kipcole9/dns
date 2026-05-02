@@ -245,6 +245,60 @@ defmodule ExDns.Resolver.DefaultTest do
     end
   end
 
+  describe "resolve/1 — AXFR" do
+    setup do
+      Storage.put_zone("xfer.test", [
+        %SOA{
+          name: "xfer.test",
+          ttl: 86_400,
+          class: :internet,
+          mname: "ns.xfer.test",
+          email: "admin.xfer.test",
+          serial: 1,
+          refresh: 7200,
+          retry: 3600,
+          expire: 1_209_600,
+          minimum: 3600
+        },
+        %NS{name: "xfer.test", ttl: 86_400, class: :internet, server: "ns.xfer.test"},
+        %A{name: "xfer.test", ttl: 60, class: :internet, ipv4: {192, 0, 2, 1}},
+        %A{name: "ns.xfer.test", ttl: 60, class: :internet, ipv4: {192, 0, 2, 53}}
+      ])
+
+      :ok
+    end
+
+    test "AXFR for the apex returns SOA … records … SOA" do
+      response = Default.resolve(query("xfer.test", :axfr))
+      assert response.header.rc == 0
+      assert response.header.aa == 1
+      assert [first | _] = response.answer
+      assert %SOA{} = first
+      assert %SOA{} = List.last(response.answer)
+      # 1 SOA + 1 NS + 2 As + final SOA = 5 records
+      assert length(response.answer) == 5
+    end
+
+    test "AXFR for a non-apex name returns REFUSED" do
+      response = Default.resolve(query("ns.xfer.test", :axfr))
+      assert response.header.rc == 5
+    end
+
+    test "AXFR for an unknown zone returns REFUSED" do
+      response = Default.resolve(query("nope.test", :axfr))
+      assert response.header.rc == 5
+    end
+
+    test "IXFR falls back to a full AXFR" do
+      response = Default.resolve(query("xfer.test", :ixfr))
+      assert response.header.rc == 0
+      # Same shape as the AXFR test above.
+      assert length(response.answer) == 5
+      assert %SOA{} = hd(response.answer)
+      assert %SOA{} = List.last(response.answer)
+    end
+  end
+
   describe "resolve/1 — wildcards (RFC 4592)" do
     setup do
       Storage.put_zone("wild.test", [
@@ -342,6 +396,50 @@ defmodule ExDns.Resolver.DefaultTest do
       assert response.header.rc == 3
       assert response.header.aa == 1
       assert [%SOA{}] = response.authority
+    end
+  end
+
+  describe "resolve/1 — NOTIFY (opcode 4)" do
+    setup do
+      Storage.put_zone("notify.test", [
+        %SOA{
+          name: "notify.test",
+          ttl: 86_400,
+          class: :internet,
+          mname: "ns.notify.test",
+          email: "admin.notify.test",
+          serial: 1,
+          refresh: 7200,
+          retry: 3600,
+          expire: 1_209_600,
+          minimum: 3600
+        }
+      ])
+
+      :ok
+    end
+
+    test "acknowledges with NOERROR + AA=1 when we own the zone" do
+      query = query("notify.test", :soa)
+      header = %Message.Header{query.header | oc: 4}
+      notify = %Message{query | header: header}
+      response = Default.resolve(notify)
+
+      assert response.header.qr == 1
+      assert response.header.oc == 4
+      assert response.header.rc == 0
+      assert response.header.aa == 1
+    end
+
+    test "acknowledges with NOERROR + AA=0 when we don't own the zone" do
+      query = query("foreign.test", :soa)
+      header = %Message.Header{query.header | oc: 4}
+      notify = %Message{query | header: header}
+      response = Default.resolve(notify)
+
+      assert response.header.qr == 1
+      assert response.header.rc == 0
+      assert response.header.aa == 0
     end
   end
 
