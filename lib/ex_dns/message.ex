@@ -185,7 +185,7 @@ defmodule ExDns.Message do
     end
   end
 
-  defp truncate_for_udp(%Message{header: header, additional: additional} = message) do
+  defp truncate_for_udp(%Message{header: %Message.Header{} = header, additional: additional} = message) do
     opt_records = Enum.filter(additional || [], &match?(%ExDns.Resource.OPT{}, &1))
 
     %Message{

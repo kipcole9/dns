@@ -3,7 +3,7 @@ defmodule ExDns do
   The main DNS parameters are [defined by IANA](https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-12)
   """
 
-  @default_resolver_module ExDns.Resolver
+  @default_resolver_module ExDns.Resolver.Default
   @default_pool_size 50
   @default_pool_overflow_size 10
   @default_pool_timeout 1000

@@ -1,4 +1,6 @@
 defmodule ExDns.Storage.ETS do
+  @behaviour ExDns.Storage
+
   @moduledoc """
   ETS-backed in-memory zone storage for ExDns.
 

@@ -66,7 +66,14 @@ defmodule ExDns.Listener.DoH.Router do
   defp respond(conn, body) when is_binary(body) do
     case Message.decode(body) do
       {:ok, query} ->
-        response = ExDns.resolver_module().resolve(query)
+        request =
+          ExDns.Request.new(query,
+            source_ip: conn.remote_ip,
+            source_port: nil,
+            transport: :doh
+          )
+
+        response = ExDns.resolver_module().resolve(request)
         response_bytes = Message.encode(response)
 
         conn

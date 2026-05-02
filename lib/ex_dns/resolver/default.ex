@@ -31,8 +31,9 @@ defmodule ExDns.Resolver.Default do
 
   alias ExDns.Message
   alias ExDns.Message.{Header, Question}
+  alias ExDns.Request
   alias ExDns.Resource.OPT
-  alias ExDns.Storage.ETS, as: Storage
+  alias ExDns.Storage
 
   # Default UDP payload size advertised in our OPT response when the
   # client did not pin one. 1232 is the EDNS payload size recommended by
@@ -53,7 +54,9 @@ defmodule ExDns.Resolver.Default do
     encoding it onto the wire.
 
   """
-  @spec resolve(Message.t()) :: Message.t()
+  @spec resolve(Message.t() | Request.t()) :: Message.t()
+
+  def resolve(%Request{message: message}), do: resolve(message)
 
   def resolve(%Message{header: %Header{qr: 0, oc: 0}, question: %Question{} = question} = message) do
     answer_query(message, question)

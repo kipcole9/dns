@@ -30,7 +30,14 @@ defmodule ExDns.Resolver.Worker do
     case Message.decode(message) do
       {:ok, query} ->
         try do
-          response = resolver.resolve(query)
+          request =
+            ExDns.Request.new(query,
+              source_ip: address,
+              source_port: port,
+              transport: :udp
+            )
+
+          response = resolver.resolve(request)
           budget = udp_budget(query)
           response_bytes = Message.encode_for_udp(response, budget)
           send_udp_response(response_bytes, address, port, socket)
@@ -48,6 +55,10 @@ defmodule ExDns.Resolver.Worker do
     {:noreply, resolver}
   end
 
+  def handle_cast(_message, resolver) do
+    {:noreply, resolver}
+  end
+
   # The UDP budget is the OPT record's advertised payload size, clamped
   # to a sensible upper bound. When no OPT was supplied, fall back to
   # the legacy 512-byte limit.
@@ -59,10 +70,6 @@ defmodule ExDns.Resolver.Worker do
   end
 
   defp udp_budget(_), do: @default_udp_payload
-
-  def handle_cast(_message, resolver) do
-    {:noreply, resolver}
-  end
 
   def handle_info(_info, resolver) do
     {:noreply, resolver}

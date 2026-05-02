@@ -13,7 +13,7 @@ defmodule ExDns.Zone do
   """
 
   alias ExDns.Resource
-  alias ExDns.Storage.ETS, as: Storage
+  alias ExDns.Storage
   alias ExDns.Zone.File, as: ZoneFile
 
   defstruct [:directives, :resources]

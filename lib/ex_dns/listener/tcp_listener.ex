@@ -71,7 +71,16 @@ defmodule ExDns.Listener.TCP do
       with {:ok, <<length::size(16)>>} <- ThousandIsland.Socket.recv(socket, 2, @idle_timeout),
            {:ok, message_bytes} <- ThousandIsland.Socket.recv(socket, length, @idle_timeout),
            {:ok, query} <- Message.decode(message_bytes) do
-        response = ExDns.resolver_module().resolve(query)
+        {source_ip, source_port} = peer_info(socket)
+
+        request =
+          ExDns.Request.new(query,
+            source_ip: source_ip,
+            source_port: source_port,
+            transport: :tcp
+          )
+
+        response = ExDns.resolver_module().resolve(request)
         response_bytes = Message.encode(response)
         :ok = ThousandIsland.Socket.send(socket, <<byte_size(response_bytes)::size(16), response_bytes::binary>>)
         handle_one(socket, state)
@@ -85,6 +94,13 @@ defmodule ExDns.Listener.TCP do
         {:error, reason} ->
           Logger.error("TCP DNS handler error: #{inspect(reason)}")
           {:close, state}
+      end
+    end
+
+    defp peer_info(socket) do
+      case ThousandIsland.Socket.peername(socket) do
+        {:ok, {ip, port}} -> {ip, port}
+        _ -> {nil, nil}
       end
     end
   end

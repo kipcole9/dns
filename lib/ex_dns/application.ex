@@ -5,10 +5,10 @@ defmodule ExDns.Application do
 
   @impl true
   def start(_type, _args) do
-    # ETS-backed zone storage is initialised eagerly so that any zones
-    # configured for autoload below can be inserted as the supervision
-    # tree comes up.
-    ExDns.Storage.ETS.init()
+    # The configured storage backend is initialised eagerly so that any
+    # zones configured for autoload below can be inserted as the
+    # supervision tree comes up.
+    ExDns.Storage.init()
 
     port = ExDns.listener_port()
 
@@ -21,7 +21,7 @@ defmodule ExDns.Application do
         {ExDns.Listener.TCP,
          port: port, transport_options: [ip: {127, 0, 0, 1}, reuseaddr: true]},
         ExDns.Resolver.Supervisor
-      ] ++ doh_children()
+      ] ++ doh_children() ++ cluster_children()
 
     opts = [strategy: :one_for_one, name: ExDns.Supervisor]
 
@@ -94,6 +94,17 @@ defmodule ExDns.Application do
     case Application.get_env(:ex_dns, :doh) do
       nil -> []
       doh_options when is_list(doh_options) -> [{ExDns.Listener.DoH, doh_options}]
+    end
+  end
+
+  # Returns the cluster child spec when clustering is enabled. Cluster
+  # membership is opt-in (`:ex_dns, :cluster, true`) — the default
+  # single-node deployment doesn't need it.
+  defp cluster_children do
+    if Application.get_env(:ex_dns, :cluster, false) do
+      [{ExDns.Cluster, []}]
+    else
+      []
     end
   end
 
