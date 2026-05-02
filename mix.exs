@@ -24,7 +24,7 @@ defmodule ExDns.Mixfile do
 
   def application do
     [
-      extra_applications: [:logger, :mnesia],
+      extra_applications: [:logger],
       mod: {ExDns.Application, []}
     ]
   end

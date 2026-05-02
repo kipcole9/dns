@@ -2,15 +2,16 @@ defmodule ExDns.Storage do
   @moduledoc """
   Behaviour describing a zone-storage backend.
 
-  Two backends are provided:
+  One backend ships today:
 
   * `ExDns.Storage.ETS` — single-node, in-memory. Default.
-  * `ExDns.Storage.Mnesia` — distributed, replicated to every node in
-    the cluster, used when `ExDns.Cluster` is enabled.
+
+  A clustered backend (Khepri) is the planned next step — see
+  `plans/2026-05-02-storage-alternatives.md` for the rationale.
 
   Configure the active backend with:
 
-      config :ex_dns, storage: ExDns.Storage.Mnesia
+      config :ex_dns, storage: ExDns.Storage.ETS
 
   All ExDns code reaches the backend via this module's wrapper
   functions, never directly. That keeps the storage choice swappable

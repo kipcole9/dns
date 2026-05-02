@@ -13,11 +13,11 @@ defmodule ExDns.Integration.ClusterTest do
     where the function actually executed)
   * killing the master triggers a re-election within ~3 seconds
 
-  Storage replication-via-Mnesia is **not** verified here — multi-node
-  Mnesia schema bootstrap is a follow-up (see plan P10f). The cluster
-  semantics being tested here (election, forwarding) are the consensus
-  layer; the underlying storage backend can be swapped later without
-  affecting this test.
+  Storage replication is **not** verified here — that's the job of
+  the clustered backend itself (Khepri, planned). The cluster
+  semantics being tested here (election, forwarding) are the
+  consensus layer; the underlying storage backend can be swapped
+  later without affecting this test.
 
   Tagged `:integration` and `:cluster`.
 

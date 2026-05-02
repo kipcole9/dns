@@ -6,12 +6,15 @@ defmodule ExDns.Cluster do
   On boot it:
 
   1. Connects to the configured peer nodes (`:ex_dns, :cluster_nodes`).
-  2. Adds itself to the Mnesia table copy lists if Mnesia is the
-     active storage backend.
-  3. Participates in master election by attempting to register the
+  2. Participates in master election by attempting to register the
      `:ex_dns_update_master` name globally. The first node to register
      becomes the master; everyone else watches it and re-runs the
      election when it goes down.
+
+  When a clustered storage backend is added (Khepri is the planned
+  next step — see `plans/2026-05-02-storage-alternatives.md`), it will
+  manage its own membership and replication; this module stays
+  focused on the master-election + write-routing concern.
 
   ## API
 
@@ -182,7 +185,6 @@ defmodule ExDns.Cluster do
     # via `Code.ensure_loaded?/1`.
     maybe_start_libcluster()
 
-    add_self_to_mnesia()
     state = %{master_ref: nil}
     send(self(), :elect)
     {:ok, state}
@@ -196,7 +198,6 @@ defmodule ExDns.Cluster do
 
   def handle_info({:nodeup, node}, state) do
     Logger.info("ExDns.Cluster: node up #{inspect(node)}")
-    add_node_to_mnesia(node)
     {:noreply, state}
   end
 
@@ -280,15 +281,4 @@ defmodule ExDns.Cluster do
     end
   end
 
-  defp add_self_to_mnesia do
-    if ExDns.Storage.backend() == ExDns.Storage.Mnesia do
-      ExDns.Storage.Mnesia.init()
-    end
-  end
-
-  defp add_node_to_mnesia(node) do
-    if ExDns.Storage.backend() == ExDns.Storage.Mnesia do
-      ExDns.Storage.Mnesia.add_node(node)
-    end
-  end
 end
