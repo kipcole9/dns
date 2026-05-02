@@ -1,9 +1,10 @@
 defmodule ExDns.Resolver.Worker do
+  @moduledoc false
+
   use GenServer
   require Logger
   alias ExDns.Resolver
   alias ExDns.Message
-  alias ExDns.Instrumenter
 
   def start_link(%{resolver: resolver}) do
     :gen_server.start_link(__MODULE__, resolver, [])
@@ -58,7 +59,17 @@ defmodule ExDns.Resolver.Worker do
     {:ok, resolver}
   end
 
-  defp send_udp_response(answer, address, port, socket) do
-    IO.inspect("Would be sending: #{inspect(answer)} to socket #{inspect(socket)}")
+  defp send_udp_response(reply_bytes, address, port, socket) when is_binary(reply_bytes) do
+    case :gen_udp.send(socket, address, port, reply_bytes) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "UDP send to #{:inet.ntoa(address)}:#{port} failed: #{inspect(reason)}"
+        )
+
+        :error
+    end
   end
 end

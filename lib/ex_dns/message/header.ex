@@ -176,6 +176,52 @@ defmodule ExDns.Message.Header do
   end
 
   @doc """
+  Encodes a `%Header{}` struct back into the 12-byte DNS message header.
+
+  ### Arguments
+
+  * `header` is a `%ExDns.Message.Header{}` struct.
+
+  ### Returns
+
+  * A 12-byte binary that is the wire-format header.
+
+  ### Examples
+
+      iex> {:ok, header, _rest} = ExDns.Message.Header.decode(<<
+      ...>   0xAB, 0xCD, 0x81, 0x80,
+      ...>   0x00, 0x01, 0x00, 0x02,
+      ...>   0x00, 0x03, 0x00, 0x04>>)
+      iex> ExDns.Message.Header.encode(header)
+      <<0xAB, 0xCD, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04>>
+
+  """
+  @spec encode(t()) :: <<_::96>>
+
+  def encode(%Message.Header{} = header) do
+    %Message.Header{
+      id: id,
+      qr: qr,
+      oc: oc,
+      aa: aa,
+      tc: tc,
+      rd: rd,
+      ra: ra,
+      ad: ad,
+      cd: cd,
+      rc: rc,
+      qc: qc,
+      anc: anc,
+      auc: auc,
+      adc: adc
+    } = header
+
+    <<id::size(16), qr::size(1), oc::size(4), aa::size(1), tc::size(1), rd::size(1), ra::size(1),
+      0::size(1), ad::size(1), cd::size(1), rc::size(4), qc::size(16), anc::size(16),
+      auc::size(16), adc::size(16)>>
+  end
+
+  @doc """
   Set the authoritative flag in a header
   """
   def put_authoritative(%Message.Header{} = header) do

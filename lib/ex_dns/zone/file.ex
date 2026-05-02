@@ -27,8 +27,8 @@ defmodule ExDns.Zone.File do
 
   def parse(string) when is_binary(string) do
     with {:ok, tokens, _end_line} <- tokenize(string),
-         {:ok, parsed} <- :zone_parser.parse(tokens) do
-      parsed
+         {:ok, {directives, records}} <- :zone_parser.parse(tokens) do
+      {:ok, directives, records}
     else
       error ->
         error
@@ -50,6 +50,81 @@ defmodule ExDns.Zone.File do
 
   # Expands origin references (a "@") into the origin
   # name
+  @doc """
+  Serialises a `%ExDns.Zone{}` back into BIND zone-file text.
+
+  Emits any `:origin` and `:ttl_default` directives at the top of the
+  file, followed by every resource record on its own line using the
+  record's `format/1` callback.
+
+  ### Arguments
+
+  * `zone` is an `%ExDns.Zone{}`.
+
+  ### Returns
+
+  * Zone-file text as a binary.
+
+  ### Examples
+
+      iex> zone = %ExDns.Zone{
+      ...>   directives: [origin: "example.test", ttl_default: 3600],
+      ...>   resources: [
+      ...>     %ExDns.Resource.A{
+      ...>       name: "example.test",
+      ...>       ttl: 60,
+      ...>       class: :internet,
+      ...>       ipv4: {192, 0, 2, 1}
+      ...>     }
+      ...>   ]
+      ...> }
+      iex> text = ExDns.Zone.File.serialize(zone)
+      iex> text =~ "$ORIGIN example.test."
+      true
+      iex> text =~ "$TTL 3600"
+      true
+      iex> text =~ "192.0.2.1"
+      true
+
+  """
+  @spec serialize(ExDns.Zone.t()) :: binary()
+  def serialize(%ExDns.Zone{directives: directives, resources: resources}) do
+    directive_lines =
+      directives
+      |> Enum.map(&serialize_directive/1)
+      |> Enum.reject(&(&1 == ""))
+
+    record_lines =
+      resources
+      |> Enum.map(fn record ->
+        record
+        |> ExDns.Resource.Format.format()
+        |> IO.iodata_to_binary()
+        |> String.trim_trailing()
+      end)
+
+    (directive_lines ++ record_lines ++ [""])
+    |> Enum.join("\n")
+  end
+
+  defp serialize_directive({:origin, origin}) when is_binary(origin) do
+    "$ORIGIN #{ensure_trailing_dot(origin)}"
+  end
+
+  defp serialize_directive({:ttl_default, ttl}) when is_integer(ttl) do
+    "$TTL #{ttl}"
+  end
+
+  defp serialize_directive({:include, path}) when is_binary(path) do
+    "$INCLUDE #{path}"
+  end
+
+  defp serialize_directive(_other), do: ""
+
+  defp ensure_trailing_dot(name) do
+    if String.ends_with?(name, "."), do: name, else: name <> "."
+  end
+
   defp expand_origin_references({directives, records}) do
     origin = directives[:origin]
 
@@ -179,7 +254,7 @@ defmodule ExDns.Zone.File do
   # address) then a list of errors will be added
   # under the :error key
   @module ExDns.Resource
-  defp build_records({directives, records} = zone) do
+  defp build_records({directives, records}) do
     resources =
       Enum.map(records, fn {type, args} ->
         module_name =

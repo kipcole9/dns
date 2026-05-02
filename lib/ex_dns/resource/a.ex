@@ -1,35 +1,44 @@
 defmodule ExDns.Resource.A do
   @moduledoc """
-  Manages the A resource record
+  Manages the A resource record (IPv4 host address).
 
-  The wire protocol is defined in [RFC1035](https://tools.ietf.org/html/rfc1035#section-3.4.1)
+  The wire protocol is defined in [RFC1035](https://tools.ietf.org/html/rfc1035#section-3.4.1).
 
-  3.4.1. A RDATA format
+  ### A RDATA format
 
       +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
       |                    ADDRESS                    |
       +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 
-  where:
+  Where `ADDRESS` is a 32-bit Internet address. Hosts that have multiple
+  Internet addresses will have multiple A records.
 
-  ADDRESS         A 32 bit Internet address.
-
-  Hosts that have multiple Internet addresses will have multiple A
-  records.
-
-  A records cause no additional section processing.  The RDATA section of
-  an A line in a master file is an Internet address expressed as four
-  decimal numbers separated by dots without any imbedded spaces (e.g.,
-  "10.2.0.52" or "192.0.5.6").
+  Internally, the address is held as an `:inet`-style tuple
+  (`{a, b, c, d}`).
 
   """
+
+  @behaviour ExDns.Resource
+
   defstruct [:name, :ttl, :class, :ipv4]
+
   import ExDns.Resource.Validation
-  import ExDns.Resource, only: [class_from: 1]
   alias ExDns.Inet.Ipv4
 
   @doc """
-  Returns an A resource from a keyword list
+  Returns an A resource from a keyword list (typically the output of the
+  zone-file parser).
+
+  ### Arguments
+
+  * `resource` is a keyword list with `:ipv4`, `:ttl`, `:class`, and
+    `:name` keys.
+
+  ### Returns
+
+  * `{:ok, %ExDns.Resource.A{}}` on success.
+
+  * `{:error, {:a, keyword_list_with_errors}}` if validation fails.
 
   """
   def new(resource) when is_list(resource) do
@@ -40,35 +49,62 @@ defmodule ExDns.Resource.A do
     |> structify_if_valid(__MODULE__)
   end
 
-  def encode(%__MODULE__{} = resource) do
-    %{name: name, ttl: ttl, class: class, ipv4: ipv4} = resource
-    rdata = << Ipv4.to_integer(ipv4) :: bytes-size(4) >>
-    rdlength = << byte_size(rdata) :: unsigned-integer-size(32) >>
+  @doc """
+  Decodes an A record's RDATA into a struct.
 
-    << Message.encode_name(name), Message.encode_class(class), Message.encode_type(type),
-    rdlength, rdata >>
+  ### Arguments
+
+  * `rdata` is exactly four bytes — the IPv4 address in network byte
+    order.
+
+  * `_message` is unused for A records (no name compression possible
+    inside the RDATA).
+
+  ### Returns
+
+  * `%ExDns.Resource.A{}` with `ipv4` set to an `{a, b, c, d}` tuple.
+
+  ### Examples
+
+      iex> ExDns.Resource.A.decode(<<192, 0, 2, 1>>, <<>>)
+      %ExDns.Resource.A{ipv4: {192, 0, 2, 1}}
+
+  """
+  @impl ExDns.Resource
+  def decode(<<a, b, c, d>>, _message) do
+    %__MODULE__{ipv4: {a, b, c, d}}
   end
 
-  @preamble ExDns.Resource.preamble_format()
-  def format(%__MODULE__{} = resource) do
-    format_string = [@preamble | '~-20s']
+  @doc """
+  Encodes an A struct into wire-format RDATA (4 bytes).
 
-    format_string
-    |> :io_lib.format([
-      resource.name,
-      resource.ttl,
-      class_from(resource.class),
-      Ipv4.to_string(resource.ipv4)
-    ])
+  ### Arguments
+
+  * `resource` is an `%ExDns.Resource.A{}`.
+
+  ### Returns
+
+  * The 4-byte RDATA binary.
+
+  ### Examples
+
+      iex> ExDns.Resource.A.encode(%ExDns.Resource.A{ipv4: {192, 0, 2, 1}})
+      <<192, 0, 2, 1>>
+
+  """
+  @impl ExDns.Resource
+  def encode(%__MODULE__{ipv4: {a, b, c, d}}) do
+    <<a, b, c, d>>
+  end
+
+  @impl ExDns.Resource
+  def format(%__MODULE__{} = resource) do
+    [ExDns.Resource.format_preamble(resource, "A"), Ipv4.to_string(resource.ipv4)]
   end
 
   defimpl ExDns.Resource.Format do
     def format(resource) do
       ExDns.Resource.A.format(resource)
-    end
-
-    def encode(%ExDns.Resource.A{} = resource) do
-      ExDns.Resource.A.encode(resource)
     end
   end
 end

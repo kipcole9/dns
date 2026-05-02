@@ -7,6 +7,14 @@ defmodule ExDns.Message do
   @enforce_keys @keys
   defstruct @keys
 
+  @type t :: %__MODULE__{
+          header: ExDns.Message.Header.t(),
+          question: ExDns.Message.Question.t() | nil,
+          answer: [struct()],
+          authority: [struct()],
+          additional: [struct()]
+        }
+
   # 4. MESSAGES
   #
   # 4.1. Format
@@ -65,8 +73,81 @@ defmodule ExDns.Message do
     end
   end
 
+  @doc """
+  Encodes a `%Message{}` struct into the transport-neutral DNS wire
+  format.
+
+  ### Arguments
+
+  * `message` is a fully-populated `%ExDns.Message{}` struct.
+
+  ### Returns
+
+  * A binary holding the wire-format message: header, then question,
+    then answer / authority / additional records.
+
+  ### Examples
+
+      iex> message = %ExDns.Message{
+      ...>   header: %ExDns.Message.Header{
+      ...>     id: 0xCAFE, qr: 0, oc: 0, aa: 0, tc: 0, rd: 1, ra: 0,
+      ...>     ad: 0, cd: 0, rc: 0, qc: 1, anc: 0, auc: 0, adc: 0
+      ...>   },
+      ...>   question: %ExDns.Message.Question{host: "example.com", type: :a, class: :in},
+      ...>   answer: [],
+      ...>   authority: [],
+      ...>   additional: []
+      ...> }
+      iex> bytes = ExDns.Message.encode(message)
+      iex> {:ok, decoded} = ExDns.Message.decode(bytes)
+      iex> decoded.question
+      %ExDns.Message.Question{host: "example.com", type: :a, class: :in}
+
+  """
+  @spec encode(t()) :: binary()
+
   def encode(%Message{} = message) do
-    message
+    %Message{
+      header: header,
+      question: question,
+      answer: answer,
+      authority: authority,
+      additional: additional
+    } = message
+
+    header_bytes = Header.encode(header)
+    offset = byte_size(header_bytes)
+    offsets = %{}
+
+    {question_bytes, offset, offsets} = encode_question(question, offset, offsets)
+
+    {answer_bytes, offsets} =
+      ExDns.Message.RR.encode_records(answer || [], offset, offsets)
+
+    offset = offset + byte_size(answer_bytes)
+
+    {authority_bytes, offsets} =
+      ExDns.Message.RR.encode_records(authority || [], offset, offsets)
+
+    offset = offset + byte_size(authority_bytes)
+
+    {additional_bytes, _offsets} =
+      ExDns.Message.RR.encode_records(additional || [], offset, offsets)
+
+    IO.iodata_to_binary([
+      header_bytes,
+      question_bytes,
+      answer_bytes,
+      authority_bytes,
+      additional_bytes
+    ])
+  end
+
+  defp encode_question(nil, offset, offsets), do: {<<>>, offset, offsets}
+
+  defp encode_question(%Question{} = question, offset, offsets) do
+    {bytes, offsets} = Question.encode(question, offset, offsets)
+    {bytes, offset + byte_size(bytes), offsets}
   end
 
   @doc """
@@ -180,82 +261,217 @@ defmodule ExDns.Message do
   # defined by a single octet of zeros at 92; the root domain name has no
   # labels.
 
-  # A name starts with 2 zero bits followed by 6 bits indicating the length in bytes of the
-  # label (part of a domain name) followed by the bytes themselved.  We recurse over the
-  # message accumlating the labels until we encounter a 0-byte that means there are no
-  # more labels
+  @doc """
+  Decodes a domain name from the DNS message wire format.
 
-  def decode_name(binary, message \\ <<>>)
+  Supports both fully-spelled label sequences and RFC 1035 §4.1.4
+  compression pointers (the leading two bits being `11`).
 
-  def decode_name(<<0::size(2), len::size(6), name::bytes-size(len), rest::binary>>, message)
-      when len > 0 do
-    decode_name(rest, [name], message)
+  ### Arguments
+
+  * `binary` is the section of the wire-format message starting at the name
+    to decode.
+
+  * `message` is the entire enclosing DNS message binary, used to resolve
+    compression pointers. Defaults to `<<>>` (no pointer support).
+
+  ### Returns
+
+  * `{:ok, name, rest}` where `name` is the dot-joined ASCII representation
+    of the domain (no trailing dot — the empty root is `""`) and `rest` is
+    the remainder of the message after the name.
+
+  * `{:error, :invalid_name}` if the bytes do not form a valid name.
+
+  ### Examples
+
+      iex> ExDns.Message.decode_name(<<7, "example", 3, "com", 0, 0xAB>>)
+      {:ok, "example.com", <<0xAB>>}
+
+      iex> ExDns.Message.decode_name(<<0>>)
+      {:ok, "", <<>>}
+
+  """
+  @spec decode_name(binary(), binary()) ::
+          {:ok, binary(), binary()} | {:error, :invalid_name}
+
+  def decode_name(binary, message \\ <<>>) do
+    decode_name_labels(binary, [], message)
   end
 
-  def decode_name(_section, _message) do
+  # End of name (root). No more labels.
+  defp decode_name_labels(<<0::size(8), rest::binary>>, labels, _message) do
+    {:ok, labels |> Enum.reverse() |> Enum.join("."), rest}
+  end
+
+  # A literal label.
+  defp decode_name_labels(
+         <<0::size(2), len::size(6), label::bytes-size(len), rest::binary>>,
+         labels,
+         message
+       )
+       when len > 0 do
+    decode_name_labels(rest, [label | labels], message)
+  end
+
+  # A compression pointer. The pointer is always terminal — anything after
+  # the pointer in the current binary belongs to the *next* field, not to
+  # the name itself.
+  defp decode_name_labels(<<0b11::size(2), offset::size(14), rest::binary>>, labels, message) do
+    <<_skip::bytes-size(^offset), pointed_at::binary>> = message
+
+    case decode_name_labels(pointed_at, [], message) do
+      {:ok, suffix, _trailing} ->
+        prefix = labels |> Enum.reverse() |> Enum.join(".")
+
+        joined =
+          case {prefix, suffix} do
+            {"", suffix} -> suffix
+            {prefix, ""} -> prefix
+            {prefix, suffix} -> prefix <> "." <> suffix
+          end
+
+        {:ok, joined, rest}
+
+      error ->
+        error
+    end
+  end
+
+  defp decode_name_labels(_other, _labels, _message) do
     {:error, :invalid_name}
   end
 
-  # A zero byte signifies the end of the labels for a name and,
-  # in this case, that there is no more content in the message
-  def decode_name(<<0::size(8)>>, name, _message) do
-    {:ok, decode_punycode(name)}
-  end
-
-  # A zero byte signifies the end of the labels for a name and,
-  # in this case, that there is more content in the message
-  def decode_name(<<0::size(8), rest::binary>>, name, _message) do
-    {:ok, decode_punycode(name), rest}
-  end
-
-  # Here we have the nth label for a name (ie a label but not the first one)
-  # which we concatentate with the labels accumulated so far
-  def decode_name(<<0::size(2), len::size(6), domain::bytes-size(len), rest::binary>>, name, message)
-      when len > 0 do
-    decode_name(rest, [domain | name], message)
-  end
-
-  # This is a compression target that specified an 0-based offset from the start
-  # of the message (including the header) where the next labels are found
-  def decode_name(<<0b11::size(2), offset::size(14), rest::binary>>, name, message) do
-    <<_offset::bytes-size(offset), indirect_domain_start::binary>> = message
-    {:ok, indirect_domain, _} = decode_name(indirect_domain_start, message)
-    decode_name(rest, [indirect_domain | name], message)
-  end
-
   @doc """
-  Encodes a name into the DNS messaging format
+  Encodes a domain name into the DNS message wire format.
+
+  ### Arguments
+
+  * `name` is the dot-joined ASCII representation of the domain (e.g.
+    `"example.com"`). The empty string `""` encodes the root domain.
+
+  ### Returns
+
+  * A binary holding the wire-format encoded name, terminated by the
+    zero-length root label.
+
+  ### Examples
+
+      iex> ExDns.Message.encode_name("example.com")
+      <<7, "example", 3, "com", 0>>
+
+      iex> ExDns.Message.encode_name("")
+      <<0>>
+
   """
+  @spec encode_name(binary()) :: binary()
+
+  def encode_name(""), do: <<0>>
+
   def encode_name(name) when is_binary(name) do
-    name
-    |> String.split(".")
-    |> Enum.map(fn part -> <<String.length(part)::size(8), part::binary>> end)
-    |> Enum.join(<<>>)
-    |> encode_punycode
-    |> Kernel.<>(<<0::size(8)>>)
+    labels =
+      name
+      |> String.split(".")
+      |> Enum.map(fn label -> <<byte_size(label)::size(8), label::binary>> end)
+      |> IO.iodata_to_binary()
+
+    labels <> <<0>>
   end
 
   @doc """
-  Encodes an IDNA (internationalized domain name) into ASCII
-  for transmission within the DNS system
+  Compression-aware name encoder.
+
+  Given the current byte offset of the name within the message and the
+  map of `suffix => offset` for already-encoded suffixes, returns the
+  encoded name and the updated offsets map.
+
+  When any tail of the name (label-aligned) is already at a known
+  offset under `0x4000` (the 14-bit pointer ceiling), the encoder emits
+  the leading labels followed by a `<<0b11::2, offset::14>>` pointer.
+  Otherwise, the full name plus terminating `0x00` is emitted.
+
+  All newly-emitted suffixes (whose offset fits in 14 bits) are added to
+  the offsets map.
+
+  ### Arguments
+
+  * `name` is the dot-joined ASCII representation of the domain.
+
+  * `offset` is the byte position in the message where this name will
+    be written.
+
+  * `offsets` is the accumulated `%{suffix => offset}` map.
+
+  ### Returns
+
+  * `{binary, updated_offsets}`.
+
   """
-  def encode_punycode(name) when is_binary(name) do
-    name
-    |> :xmerl_ucs.from_utf8()
-    |> :idna.to_ascii()
-    |> List.to_string()
+  @spec encode_name(binary(), non_neg_integer(), map()) :: {binary(), map()}
+
+  def encode_name("", offset, offsets) do
+    {<<0>>, maybe_register(offsets, "", offset)}
   end
 
-  @doc """
-  Decodes an ASCII domain name into a human readable
-  potentially UTF-8 format in support of internationalized
-  domain names
-  """
-  def decode_punycode(name) when is_list(name) do
-    Enum.map name, fn n ->
-      n
-      |> String.to_charlist()
-      |> :idna.from_ascii()
+  def encode_name(name, offset, offsets) when is_binary(name) do
+    labels = String.split(name, ".")
+    encode_labels(labels, offset, offsets, [], 0)
+  end
+
+  # Walk the labels, emitting them one by one, looking for a known
+  # suffix to point at. `emitted_iodata` is the labels already written
+  # for this name; `bytes_written` is their byte count.
+  defp encode_labels([], offset, offsets, emitted_iodata, bytes_written) do
+    # No matching suffix — emit terminating zero.
+    out = IO.iodata_to_binary(:lists.reverse([<<0>> | emitted_iodata]))
+    final_offsets = maybe_register(offsets, "", offset + bytes_written)
+    {out, final_offsets}
+  end
+
+  defp encode_labels([label | rest] = labels, offset, offsets, emitted_iodata, bytes_written) do
+    suffix = Enum.join(labels, ".")
+    suffix_offset = offset + bytes_written
+
+    case Map.get(offsets, suffix) do
+      nil ->
+        # Register this suffix, emit the label, recurse with the rest.
+        new_offsets = maybe_register(offsets, suffix, suffix_offset)
+
+        label_bytes = <<byte_size(label)::size(8), label::binary>>
+
+        encode_labels(
+          rest,
+          offset,
+          new_offsets,
+          [label_bytes | emitted_iodata],
+          bytes_written + byte_size(label_bytes)
+        )
+
+      pointer_offset when pointer_offset < 0x4000 ->
+        # Found a re-usable suffix. Emit the labels written so far plus
+        # a 2-byte pointer; do NOT emit the terminating zero.
+        pointer = <<0b11::size(2), pointer_offset::size(14)>>
+        out = IO.iodata_to_binary(:lists.reverse([pointer | emitted_iodata]))
+        {out, offsets}
+
+      _too_far ->
+        # Cannot point past 0x3FFF; fall through and emit normally.
+        new_offsets = offsets
+        label_bytes = <<byte_size(label)::size(8), label::binary>>
+
+        encode_labels(
+          rest,
+          offset,
+          new_offsets,
+          [label_bytes | emitted_iodata],
+          bytes_written + byte_size(label_bytes)
+        )
     end
   end
+
+  defp maybe_register(offsets, suffix, offset) when offset < 0x4000 do
+    Map.put_new(offsets, suffix, offset)
+  end
+
+  defp maybe_register(offsets, _suffix, _offset), do: offsets
 end

@@ -1,4 +1,4 @@
-use Mix.Config
+import Config
 
 config :ex_dns,
   resolver: ExDns.Resolver.Default,
@@ -6,4 +6,3 @@ config :ex_dns,
   resolver_pool_size: 5,
   resolver_pool_overflow_size: 1,
   listener_port: 8000
-

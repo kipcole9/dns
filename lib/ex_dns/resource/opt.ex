@@ -1,128 +1,168 @@
 defmodule ExDns.Resource.OPT do
-  # https://tools.ietf.org/html/rfc6891#section-6.1
-  # 6.1.  OPT Record Definition
-  #
-  # 6.1.1.  Basic Elements
-  #
-  #    An OPT pseudo-RR (sometimes called a meta-RR) MAY be added to the
-  #    additional data section of a request.
-  #
-  #    The OPT RR has RR type 41.
-  #
-  #    If an OPT record is present in a received request, compliant
-  #    responders MUST include an OPT record in their respective responses.
-  #
-  #    An OPT record does not carry any DNS data.  It is used only to
-  #    contain control information pertaining to the question-and-answer
-  #    sequence of a specific transaction.  OPT RRs MUST NOT be cached,
-  #    forwarded, or stored in or loaded from master files.
-  #
-  #    The OPT RR MAY be placed anywhere within the additional data section.
-  #    When an OPT RR is included within any DNS message, it MUST be the
-  #    only OPT RR in that message.  If a query message with more than one
-  #    OPT RR is received, a FORMERR (RCODE=1) MUST be returned.  The
-  #    placement flexibility for the OPT RR does not override the need for
-  #    the TSIG or SIG(0) RRs to be the last in the additional section
-  #    whenever they are present.
-  #
-  # 6.1.2.  Wire Format
-  #
-  #    An OPT RR has a fixed part and a variable set of options expressed as
-  #    {attribute, value} pairs.  The fixed part holds some DNS metadata,
-  #    and also a small collection of basic extension elements that we
-  #    expect to be so popular that it would be a waste of wire space to
-  #    encode them as {attribute, value} pairs.
-  #
-  #    The fixed part of an OPT RR is structured as follows:
-  #
-  #        +------------+--------------+------------------------------+
-  #        | Field Name | Field Type   | Description                  |
-  #        +------------+--------------+------------------------------+
-  #        | NAME       | domain name  | MUST be 0 (root domain)      |
-  #        | TYPE       | u_int16_t    | OPT (41)                     |
-  #        | CLASS      | u_int16_t    | requestor's UDP payload size |
-  #        | TTL        | u_int32_t    | extended RCODE and flags     |
-  #        | RDLEN      | u_int16_t    | length of all RDATA          |
-  #        | RDATA      | octet stream | {attribute,value} pairs      |
-  #        +------------+--------------+------------------------------+
-  #
-  #    The variable part of an OPT RR may contain zero or more options in
-  #    the RDATA.  Each option MUST be treated as a bit field.  Each option
-  #    is encoded as:
-  #
-  #                   +0 (MSB)                            +1 (LSB)
-  #        +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
-  #     0: |                          OPTION-CODE                          |
-  #        +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
-  #     2: |                         OPTION-LENGTH                         |
-  #        +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
-  #     4: |                                                               |
-  #        /                          OPTION-DATA                          /
-  #        /                                                               /
-  #        +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
-  #
-  #    OPTION-CODE
-  #       Assigned by the Expert Review process as defined by the DNSEXT
-  #       working group and the IESG.
-  #
-  #    OPTION-LENGTH
-  #       Size (in octets) of OPTION-DATA.
-  #
-  #    OPTION-DATA
-  #       Varies per OPTION-CODE.  MUST be treated as a bit field.
-  #
-  #    The order of appearance of option tuples is not defined.  If one
-  #    option modifies the behaviour of another or multiple options are
-  #    related to one another in some way, they have the same effect
-  #    regardless of ordering in the RDATA wire encoding.
-  #
-  #    Any OPTION-CODE values not understood by a responder or requestor
-  #    MUST be ignored.  Specifications of such options might wish to
-  #    include some kind of signaled acknowledgement.  For example, an
-  #    option specification might say that if a responder sees and supports
-  #    option XYZ, it MUST include option XYZ in its response.
-  #
-  # 6.1.3.  OPT Record TTL Field Use
-  #
-  #    The extended RCODE and flags, which OPT stores in the RR Time to Live
-  #    (TTL) field, are structured as follows:
-  #
-  #                   +0 (MSB)                            +1 (LSB)
-  #        +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
-  #     0: |         EXTENDED-RCODE        |            VERSION            |
-  #        +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
-  #     2: | DO|                           Z                               |
-  #        +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
-  #
-  #    EXTENDED-RCODE
-  #       Forms the upper 8 bits of extended 12-bit RCODE (together with the
-  #       4 bits defined in [RFC1035].  Note that EXTENDED-RCODE value 0
-  #       indicates that an unextended RCODE is in use (values 0 through
-  #       15).
-  #
-  #    VERSION
-  #       Indicates the implementation level of the setter.  Full
-  #       conformance with this specification is indicated by version '0'.
-  #       Requestors are encouraged to set this to the lowest implemented
-  #       level capable of expressing a transaction, to minimise the
-  #       responder and network load of discovering the greatest common
-  #       implementation level between requestor and responder.  A
-  #       requestor's version numbering strategy MAY ideally be a run-time
-  #       configuration option.
-  #       If a responder does not implement the VERSION level of the
-  #       request, then it MUST respond with RCODE=BADVERS.  All responses
-  #       MUST be limited in format to the VERSION level of the request, but
-  #       the VERSION of each response SHOULD be the highest implementation
-  #       level of the responder.  In this way, a requestor will learn the
-  #       implementation level of a responder as a side effect of every
-  #       response, including error responses and including RCODE=BADVERS.
-  #
-  # 6.1.4.  Flags
-  #
-  #    DO
-  #       DNSSEC OK bit as defined by [RFC3225].
-  #
-  #    Z
-  #       Set to zero by senders and ignored by receivers, unless modified
-  #       in a subsequent specification.
+  @moduledoc """
+  Implements the OPT pseudo-resource record used by EDNS(0).
+
+  The wire protocol is defined in [RFC6891](https://tools.ietf.org/html/rfc6891).
+
+  ## Wire layout
+
+  The OPT record looks like a normal resource record but several of its
+  fields are repurposed:
+
+      +------------+--------------+------------------------------+
+      | Field      | Type         | Description                  |
+      +------------+--------------+------------------------------+
+      | NAME       | domain name  | MUST be the root (`""`)      |
+      | TYPE       | u16          | 41                           |
+      | CLASS      | u16          | requestor's UDP payload size |
+      | TTL        | u32          | ext-rcode (8) | version (8)  |
+      |            |              | | DO (1) | Z (15)            |
+      | RDLENGTH   | u16          | length of option list        |
+      | RDATA      | option list  | zero or more {code, data}    |
+      +------------+--------------+------------------------------+
+
+  Each option in `RDATA` is `<<option_code::16, option_length::16,
+  option_data::binary-size(option_length)>>`.
+
+  Because the CLASS and TTL fields are repurposed, the `decode/2` and
+  `encode/1` callbacks of `ExDns.Resource` are not appropriate here:
+  the section codec (`ExDns.Message.RR`) special-cases TYPE 41 and
+  calls `decode_record/4` / `encode_record/1` on this module instead.
+
+  """
+
+  defstruct payload_size: 4096,
+            extended_rcode: 0,
+            version: 0,
+            dnssec_ok: 0,
+            z: 0,
+            options: []
+
+  @type option :: {non_neg_integer(), binary()}
+
+  @type t :: %__MODULE__{
+          payload_size: non_neg_integer(),
+          extended_rcode: non_neg_integer(),
+          version: non_neg_integer(),
+          dnssec_ok: 0 | 1,
+          z: non_neg_integer(),
+          options: [option()]
+        }
+
+  @doc """
+  Builds an OPT struct from the wire-level fields of a single resource
+  record whose TYPE is 41.
+
+  ### Arguments
+
+  * `class_field` is the 16-bit CLASS, repurposed as the requestor's
+    UDP payload size.
+
+  * `ttl_field` is the 32-bit TTL, repurposed as
+    `<<extended_rcode::8, version::8, dnssec_ok::1, z::15>>`.
+
+  * `rdata` is the option list.
+
+  * `_message` is unused (no name compression in OPT RDATA).
+
+  ### Returns
+
+  * `%ExDns.Resource.OPT{}`.
+
+  """
+  @spec decode_record(non_neg_integer(), non_neg_integer(), binary(), binary()) :: t()
+
+  def decode_record(class_field, ttl_field, rdata, _message) do
+    <<extended_rcode::size(8), version::size(8), dnssec_ok::size(1), z::size(15)>> =
+      <<ttl_field::size(32)>>
+
+    %__MODULE__{
+      payload_size: class_field,
+      extended_rcode: extended_rcode,
+      version: version,
+      dnssec_ok: dnssec_ok,
+      z: z,
+      options: decode_options(rdata, [])
+    }
+  end
+
+  defp decode_options(<<>>, acc), do: Enum.reverse(acc)
+
+  defp decode_options(
+         <<code::size(16), length::size(16), data::binary-size(length), rest::binary>>,
+         acc
+       ) do
+    decode_options(rest, [{code, data} | acc])
+  end
+
+  @doc """
+  Encodes an OPT struct into a complete wire-format resource record
+  (NAME + TYPE + CLASS + TTL + RDLENGTH + RDATA).
+
+  Returns a binary suitable for direct concatenation into the Additional
+  section.
+  """
+  @spec encode_record(t()) :: binary()
+
+  def encode_record(%__MODULE__{} = opt) do
+    %__MODULE__{
+      payload_size: payload_size,
+      extended_rcode: extended_rcode,
+      version: version,
+      dnssec_ok: dnssec_ok,
+      z: z,
+      options: options
+    } = opt
+
+    rdata = encode_options(options)
+    rdlength = byte_size(rdata)
+
+    <<
+      # NAME = root
+      0::size(8),
+      # TYPE = 41 (OPT)
+      41::size(16),
+      # CLASS = payload size
+      payload_size::size(16),
+      # TTL
+      extended_rcode::size(8),
+      version::size(8),
+      dnssec_ok::size(1),
+      z::size(15),
+      # RDLENGTH + RDATA
+      rdlength::size(16),
+      rdata::binary
+    >>
+  end
+
+  @doc """
+  Encodes an option list into the binary form used in the OPT RDATA.
+  """
+  @spec encode_options([option()]) :: binary()
+
+  def encode_options(options) when is_list(options) do
+    options
+    |> Enum.map(fn {code, data} ->
+      <<code::size(16), byte_size(data)::size(16), data::binary>>
+    end)
+    |> IO.iodata_to_binary()
+  end
+
+  @doc """
+  Convenience constructor: returns the typical "I am EDNS0-aware"
+  OPT record a server includes in its responses, with the supplied
+  payload size (default 4096).
+  """
+  @spec response_opt(keyword()) :: t()
+
+  def response_opt(options \\ []) do
+    %__MODULE__{
+      payload_size: Keyword.get(options, :payload_size, 4096),
+      extended_rcode: Keyword.get(options, :extended_rcode, 0),
+      version: 0,
+      dnssec_ok: Keyword.get(options, :dnssec_ok, 0),
+      z: 0,
+      options: Keyword.get(options, :options, [])
+    }
+  end
 end

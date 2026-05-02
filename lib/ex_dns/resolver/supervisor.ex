@@ -6,25 +6,26 @@ defmodule ExDns.Resolver.Supervisor do
   @pool_name :"Elixir.ExDns.Resolver.Pool"
   @worker_module ExDns.Resolver.Worker
 
-  def start_link do
+  def start_link(_arg \\ :ok) do
     Supervisor.start_link(__MODULE__, :ok, name: __MODULE__)
   end
 
+  @impl true
   def init(:ok) do
     children = [
       :poolboy.child_spec(@pool_name, poolboy_config(), %{resolver: ExDns.resolver_module()})
     ]
 
-    supervise(children, strategy: :one_for_one)
+    Supervisor.init(children, strategy: :one_for_one)
   end
 
-  defp poolboy_config() do
+  defp poolboy_config do
     [
       {:name, {:local, @pool_name}},
       {:worker_module, @worker_module},
       {:size, ExDns.pool_size()},
       {:max_overflow, ExDns.pool_overflow_size()},
-      {:strateg, :fifo}
+      {:strategy, :fifo}
     ]
   end
 

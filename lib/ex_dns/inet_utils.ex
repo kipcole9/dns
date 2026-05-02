@@ -1,5 +1,5 @@
 defmodule ExDns.Inet.Ipv4 do
-  use Bitwise
+  import Bitwise
   import Kernel, except: [to_string: 1]
 
   def to_integer({a, b, c, d}) do

@@ -1,10 +1,10 @@
 defmodule ExDns.Resource.MX do
   @moduledoc """
-  Manages the MX resource record.
+  Manages the MX resource record (mail exchange).
 
-  The wire protocol is defined in [RFC1035](https://tools.ietf.org/html/rfc1035#section-3.3.9)
+  The wire protocol is defined in [RFC1035](https://tools.ietf.org/html/rfc1035#section-3.3.9).
 
-  3.3.9. MX RDATA format
+  ### MX RDATA format
 
       +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
       |                  PREFERENCE                   |
@@ -13,25 +13,34 @@ defmodule ExDns.Resource.MX do
       /                                               /
       +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 
-  where:
-
-  PREFERENCE      A 16 bit integer which specifies the preference given to
-                  this RR among others at the same owner.  Lower values
-                  are preferred.
-
-  EXCHANGE        A <domain-name> which specifies a host willing to act as
-                  a mail exchange for the owner name.
-
-  MX records cause type A additional section processing for the host
-  specified by EXCHANGE.  The use of MX RRs is explained in detail in
-  [RFC-974].
+  Where `PREFERENCE` is a 16-bit integer (lower values are preferred) and
+  `EXCHANGE` is a domain name that names a host willing to act as a mail
+  exchange for the owner.
 
   """
 
-  defstruct [:name, :ttl, :class, :priority, :server]
-  import ExDns.Resource.Validation
-  import ExDns.Resource, only: [class_from: 1]
+  @behaviour ExDns.Resource
 
+  defstruct [:name, :ttl, :class, :priority, :server]
+
+  import ExDns.Resource.Validation
+  alias ExDns.Message
+
+  @doc """
+  Returns an MX resource from a keyword list.
+
+  ### Arguments
+
+  * `resource` is a keyword list with `:priority`, `:server`, `:ttl`,
+    `:class`, and `:name` keys.
+
+  ### Returns
+
+  * `{:ok, %ExDns.Resource.MX{}}` on success.
+
+  * `{:error, {:mx, keyword_list_with_errors}}` on validation failure.
+
+  """
   def new(resource) when is_list(resource) do
     resource
     |> validate_integer(:ttl)
@@ -40,24 +49,60 @@ defmodule ExDns.Resource.MX do
     |> structify_if_valid(__MODULE__)
   end
 
-  @preamble ExDns.Resource.preamble_format()
-  def format(%__MODULE__{} = resource) do
-    format_string = [@preamble | '~2w ~-20s']
+  @doc """
+  Decodes an MX record's RDATA into a struct.
 
-    format_string
-    |> :io_lib.format([
-      resource.name,
-      resource.ttl,
-      class_from(resource.class),
-      resource.priority,
-      resource.server
-    ])
-    |> :erlang.iolist_to_binary()
+  ### Arguments
+
+  * `rdata` is the RDATA slice — a 16-bit `PREFERENCE` followed by a
+    domain name.
+
+  * `message` is the enclosing DNS message, used to resolve compression
+    pointers in `EXCHANGE`.
+
+  ### Returns
+
+  * `%ExDns.Resource.MX{}` with `priority` and `server` populated.
+
+  ### Examples
+
+      iex> ExDns.Resource.MX.decode(<<0, 10, 4, "mail", 7, "example", 3, "com", 0>>, <<>>)
+      %ExDns.Resource.MX{priority: 10, server: "mail.example.com"}
+
+  """
+  @impl ExDns.Resource
+  def decode(<<priority::size(16), exchange::binary>>, message) do
+    {:ok, server, _rest} = Message.decode_name(exchange, message)
+    %__MODULE__{priority: priority, server: server}
+  end
+
+  @doc """
+  Encodes an MX struct into wire-format RDATA.
+
+  ### Examples
+
+      iex> ExDns.Resource.MX.encode(%ExDns.Resource.MX{priority: 10, server: "mail.example.com"})
+      <<0, 10, 4, "mail", 7, "example", 3, "com", 0>>
+
+  """
+  @impl ExDns.Resource
+  def encode(%__MODULE__{priority: priority, server: server}) do
+    <<priority::size(16), Message.encode_name(server)::binary>>
+  end
+
+  @impl ExDns.Resource
+  def format(%__MODULE__{} = resource) do
+    [
+      ExDns.Resource.format_preamble(resource, "MX"),
+      Integer.to_string(resource.priority),
+      " ",
+      ExDns.Resource.to_fqdn(resource.server)
+    ]
   end
 
   defimpl ExDns.Resource.Format do
     def format(resource) do
-      __MODULE__.format(resource)
+      ExDns.Resource.MX.format(resource)
     end
   end
 end

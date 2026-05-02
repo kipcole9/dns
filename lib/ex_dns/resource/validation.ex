@@ -32,6 +32,12 @@ defmodule ExDns.Resource.Validation do
     record
   end
 
+  # Missing key — leave the record alone so the caller can fall back to
+  # defaults further up the pipeline.
+  defp do_validate_integer(record, _key, nil) do
+    record
+  end
+
   def validate_class(record, key, class) when is_atom(class) do
     if record[key] == class do
       record
@@ -47,7 +53,7 @@ defmodule ExDns.Resource.Validation do
 
   # Validate that its a domain name - meaning
   # an fqdn or
-  def validate_domain_name(record, name) do
+  def validate_domain_name(record, _name) do
     record
   end
 

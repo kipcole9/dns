@@ -21,14 +21,12 @@ defmodule ExDns.Listener.UDP do
   def resolve(address, port, socket, bin, state) do
     case get_worker() do
       {:ok, worker} when is_pid(worker) ->
-        try do
-          GenServer.cast(worker, {:udp_query, address, port, socket, bin})
-        after
-          :poolboy.checkin(Resolver.Supervisor.pool_name(), worker)
-          {:noreply, state}
-        end
+        # The worker checks itself back into the pool in its `handle_cast/2`
+        # `after` clause once the request has been processed.
+        GenServer.cast(worker, {:udp_query, address, port, socket, bin})
+        {:noreply, state}
 
-      {:error, {message, _pool_status}} = error ->
+      {:error, {message, _pool_status}} ->
         Logger.error(message)
         {:noreply, state}
     end
@@ -36,9 +34,19 @@ defmodule ExDns.Listener.UDP do
 
   def ping do
     {:ok, socket} = :gen_udp.open(0)
-    {:ok, address} = :inet_parse.address('127.0.0.1')
+    {:ok, address} = :inet_parse.address(~c"127.0.0.1")
     :gen_udp.send(socket, address, 8000, "This is a test")
     :gen_udp.close(socket)
+  end
+
+  def child_spec(%{inet_family: inet_family} = args) do
+    %{
+      id: name_from_module(__MODULE__, inet_family),
+      start: {__MODULE__, :start_link, [args]},
+      type: :worker,
+      restart: :permanent,
+      shutdown: 5_000
+    }
   end
 
   def start_link(
@@ -75,7 +83,7 @@ defmodule ExDns.Listener.UDP do
   The format of the msssage is defined by the `:inet` module.
   """
   def handle_info({:udp, socket, host, port, bin}, state) do
-    response = resolve(host, port, socket, bin, state)
+    _response = resolve(host, port, socket, bin, state)
     :inet.setopts(Map.get(state, :socket), active: @active)
     {:noreply, state}
   end

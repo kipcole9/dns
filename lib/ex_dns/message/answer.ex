@@ -1,66 +1,48 @@
 defmodule ExDns.Message.Answer do
   @moduledoc """
-  Encodes and decodes Answer records
+  Decodes and encodes the Answer section of a DNS message.
 
-  4.1.3. Resource record format
-
-  The answer, authority, and additional sections all share the same
-  format: a variable number of resource records, where the number of
-  records is specified in the corresponding count field in the header.
-  Each resource record has the following format:
-                                      1  1  1  1  1  1
-        0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
-      +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-      |                                               |
-      /                                               /
-      /                      NAME                     /
-      |                                               |
-      +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-      |                      TYPE                     |
-      +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-      |                     CLASS                     |
-      +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-      |                      TTL                      |
-      |                                               |
-      +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-      |                   RDLENGTH                    |
-      +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--|
-      /                     RDATA                     /
-      /                                               /
-      +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-
-  where:
-
-  NAME            a domain name to which this resource record pertains.
-
-  TYPE            two octets containing one of the RR type codes.  This
-                  field specifies the meaning of the data in the RDATA
-                  field.
-
-  CLASS           two octets which specify the class of the data in the
-                  RDATA field.
-
-  TTL             a 32 bit unsigned integer that specifies the time
-                  interval (in seconds) that the resource record may be
-                  cached before it should be discarded.  Zero values are
-                  interpreted to mean that the RR can only be used for the
-                  transaction in progress, and should not be cached.
-
-  RDLENGTH        an unsigned 16 bit integer that specifies the length in
-                  octets of the RDATA field.
-
-  RDATA           a variable length string of octets that describes the
-                  resource.  The format of this information varies
-                  according to the TYPE and CLASS of the resource record.
-                  For example, if the TYPE is A and the CLASS is IN,
-                  the RDATA field is a 4 octet ARPA Internet address.
+  The Answer section is a (possibly empty) list of resource records whose
+  count is given by the `ANCOUNT` field in the header. The wire format
+  for each record is shared with the Authority and Additional sections;
+  see `ExDns.Message.RR`.
 
   """
-  def encode(answer) do
 
+  alias ExDns.Message
+  alias ExDns.Message.RR
+
+  @doc """
+  Decodes the Answer section.
+
+  ### Arguments
+
+  * `header` is the already-decoded `%ExDns.Message.Header{}`; only its
+    `:anc` field is consulted.
+
+  * `binary` is the message bytes positioned at the first answer record.
+
+  * `message` is the full enclosing DNS message, used for resolving name
+    compression pointers.
+
+  ### Returns
+
+  * `{:ok, records, rest}` — `records` is a list of per-type resource
+    record structs; `rest` is the remaining bytes after the section.
+
+  """
+  def decode(%Message.Header{anc: count}, binary, message) do
+    RR.decode_records(count, binary, message)
   end
 
-  def decode(header, rest, message) do
-    {:ok, nil, message}
-  end
+  @doc """
+  Encodes a list of answer records into wire-format bytes.
+
+  Returns the binary; the caller is responsible for setting `ANCOUNT` on
+  the header to `length(records)` before encoding the header.
+
+  """
+  def encode(records) when is_list(records), do: RR.encode_records(records)
+
+  def encode(nil), do: <<>>
 end

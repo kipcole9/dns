@@ -73,6 +73,56 @@ defmodule ExDns.Resource do
   @keys [:name, :type, :class, :ttl, :rdlength, :rdata]
   defstruct @keys
 
+  @doc """
+  Decode the RDATA portion of a resource record into the per-type struct.
+
+  ### Arguments
+
+  * `rdata` is the binary slice of length `rdlength` taken directly out of
+    the resource record's RDATA field.
+
+  * `message` is the entire enclosing DNS message binary, supplied so that
+    name-compression pointers inside `rdata` can be resolved against
+    earlier offsets in the message.
+
+  ### Returns
+
+  * The per-type resource record struct.
+
+  """
+  @callback decode(rdata :: binary(), message :: binary()) :: struct()
+
+  @doc """
+  Encode the per-type resource record struct into the RDATA portion of a
+  DNS resource record.
+
+  ### Arguments
+
+  * `resource` is the per-type struct.
+
+  ### Returns
+
+  * `iodata` containing the wire-format RDATA. The caller is responsible
+    for prepending the standard NAME / TYPE / CLASS / TTL / RDLENGTH
+    preamble.
+
+  """
+  @callback encode(resource :: struct()) :: iodata()
+
+  @doc """
+  Render the resource record as a line of zone-file text.
+
+  ### Arguments
+
+  * `resource` is the per-type struct.
+
+  ### Returns
+
+  * `iolist` containing the zone-file text for the record.
+
+  """
+  @callback format(resource :: struct()) :: iolist()
+
 
   @typedoc """
   The TYPE fields used in resource records.
@@ -217,21 +267,27 @@ defmodule ExDns.Resource do
   def decode_type(24), do: :sig
   def decode_type(25), do: :key
   def decode_type(29), do: :loc
-  def decode_type(28), do: :aaa
+  def decode_type(28), do: :aaaa
   def decode_type(33), do: :srv
   def decode_type(35), do: :naptr
   def decode_type(39), do: :dname
   def decode_type(41), do: :opt
   def decode_type(43), do: :ds
+  def decode_type(44), do: :sshfp
+  def decode_type(52), do: :tlsa
   def decode_type(46), do: :rrsig
   def decode_type(47), do: :nsec
   def decode_type(48), do: :dnskey
+  def decode_type(50), do: :nsec3
+  def decode_type(64), do: :svcb
+  def decode_type(65), do: :https
   def decode_type(99), do: :spf
   def decode_type(252), do: :axfr
   def decode_type(253), do: :mailb
   def decode_type(254), do: :maila
   def decode_type(255), do: :any
   def decode_type(256), do: :uri
+  def decode_type(257), do: :caa
   def decode_type(type) when type in 65280..65534, do: :private_use
 
   @doc """
@@ -250,7 +306,164 @@ defmodule ExDns.Resource do
   # Translates the encoded class to the zone file representation
   def decode_class(:internet), do: "IN"
 
+  @doc """
+  Returns the zone-file mnemonic (e.g. `"IN"`) for a class atom.
+
+  Used when rendering resource records back into zone-file text.
+
+  """
+  def class_from(:in), do: "IN"
+  def class_from(:internet), do: "IN"
+  def class_from(:cs), do: "CS"
+  def class_from(:ch), do: "CH"
+  def class_from(:hs), do: "HS"
+  def class_from(:none), do: "NONE"
+  def class_from(:all), do: "ANY"
+  def class_from(:any), do: "ANY"
+
+  @doc """
+  Returns the wire-protocol integer for a type atom.
+
+  Inverse of `decode_type/1`.
+
+  """
+  def type_from(:a), do: 1
+  def type_from(:ns), do: 2
+  def type_from(:md), do: 3
+  def type_from(:mf), do: 4
+  def type_from(:cname), do: 5
+  def type_from(:soa), do: 6
+  def type_from(:mb), do: 7
+  def type_from(:mg), do: 8
+  def type_from(:mr), do: 9
+  def type_from(:null), do: 10
+  def type_from(:wks), do: 11
+  def type_from(:ptr), do: 12
+  def type_from(:hinfo), do: 13
+  def type_from(:minfo), do: 14
+  def type_from(:mx), do: 15
+  def type_from(:txt), do: 16
+  def type_from(:rp), do: 17
+  def type_from(:adsdb), do: 18
+  def type_from(:rt), do: 21
+  def type_from(:sig), do: 24
+  def type_from(:key), do: 25
+  def type_from(:aaaa), do: 28
+  def type_from(:loc), do: 29
+  def type_from(:srv), do: 33
+  def type_from(:naptr), do: 35
+  def type_from(:dname), do: 39
+  def type_from(:opt), do: 41
+  def type_from(:ds), do: 43
+  def type_from(:sshfp), do: 44
+  def type_from(:tlsa), do: 52
+  def type_from(:rrsig), do: 46
+  def type_from(:nsec), do: 47
+  def type_from(:dnskey), do: 48
+  def type_from(:nsec3), do: 50
+  def type_from(:svcb), do: 64
+  def type_from(:https), do: 65
+  def type_from(:spf), do: 99
+  def type_from(:axfr), do: 252
+  def type_from(:mailb), do: 253
+  def type_from(:maila), do: 254
+  def type_from(:any), do: 255
+  def type_from(:uri), do: 256
+  def type_from(:caa), do: 257
+
+  @doc """
+  Returns the wire-protocol integer for a class atom.
+
+  Inverse of `decode_class/1`.
+
+  """
+  def class_for(:in), do: 1
+  def class_for(:internet), do: 1
+  def class_for(:cs), do: 2
+  def class_for(:ch), do: 3
+  def class_for(:hs), do: 4
+  def class_for(:none), do: 254
+  def class_for(:all), do: 255
+  def class_for(:any), do: 255
+
+  @doc """
+  Returns the resource module that implements decode/encode/format for the
+  given type atom, or `nil` if no module is registered.
+
+  ### Arguments
+
+  * `type` is a resource record type atom (e.g. `:a`, `:cname`, `:srv`).
+
+  ### Returns
+
+  * The atom of the implementing module, or `nil`.
+
+  """
+  def module_for(:a), do: ExDns.Resource.A
+  def module_for(:aaaa), do: ExDns.Resource.AAAA
+  def module_for(:ns), do: ExDns.Resource.NS
+  def module_for(:cname), do: ExDns.Resource.CNAME
+  def module_for(:ptr), do: ExDns.Resource.PTR
+  def module_for(:soa), do: ExDns.Resource.SOA
+  def module_for(:mx), do: ExDns.Resource.MX
+  def module_for(:txt), do: ExDns.Resource.TXT
+  def module_for(:srv), do: ExDns.Resource.SRV
+  def module_for(:hinfo), do: ExDns.Resource.HINFO
+  def module_for(:caa), do: ExDns.Resource.CAA
+  def module_for(:dname), do: ExDns.Resource.DNAME
+  def module_for(:sshfp), do: ExDns.Resource.SSHFP
+  def module_for(:naptr), do: ExDns.Resource.NAPTR
+  def module_for(:uri), do: ExDns.Resource.URI
+  def module_for(:loc), do: ExDns.Resource.LOC
+  def module_for(:tlsa), do: ExDns.Resource.TLSA
+  def module_for(:ds), do: ExDns.Resource.DS
+  def module_for(:dnskey), do: ExDns.Resource.DNSKEY
+  def module_for(:rrsig), do: ExDns.Resource.RRSIG
+  def module_for(:nsec), do: ExDns.Resource.NSEC
+  def module_for(:nsec3), do: ExDns.Resource.NSEC3
+  def module_for(:svcb), do: ExDns.Resource.SVCB
+  def module_for(:https), do: ExDns.Resource.HTTPS
+  # OPT (EDNS0) is intentionally NOT registered yet — the OPT module is
+  # still a comment block. Returning nil here causes the section
+  # decoder/encoder to fall back to a generic `%ExDns.Resource{}`
+  # wrapper carrying the raw RDATA, so messages with OPT records
+  # parse without crashing.
+  def module_for(:opt), do: nil
+  def module_for(_type), do: nil
+
   # Standard format string for name, ttl, class
   @doc false
-  def preamble_format, do: '~-20s ~10w ~2s '
+  def preamble_format, do: ~c"~-20s ~10w ~2s "
+
+  @doc """
+  Renders the standard `<owner> <ttl> <class> <TYPE>` preamble used by
+  every per-type `format/1` implementation. `type_label` is the
+  upper-case mnemonic for the record type (e.g. `"A"`, `"NS"`).
+
+  Domain names emitted are trailing-dot FQDNs so the output is
+  re-parseable by the Yecc grammar.
+  """
+  @spec format_preamble(struct(), String.t()) :: iolist()
+  def format_preamble(%{name: name, ttl: ttl, class: class}, type_label) do
+    [
+      to_fqdn(name),
+      " ",
+      Integer.to_string(ttl || 0),
+      " ",
+      class_from(class),
+      " ",
+      type_label,
+      " "
+    ]
+  end
+
+  @doc """
+  Returns `name` with a trailing dot appended (no-op if already
+  present). The empty string is returned as `"."` (the root).
+  """
+  @spec to_fqdn(binary()) :: binary()
+  def to_fqdn(""), do: "."
+  def to_fqdn(name) when is_binary(name) do
+    if String.ends_with?(name, "."), do: name, else: name <> "."
+  end
 end

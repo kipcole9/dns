@@ -28,8 +28,9 @@ directives        ->  directive : ['$1'].
 directives        ->  directive directives : accumulate('$1', '$2').
 
 records           ->  soa_record records : accumulate('$1', '$2').
-records           ->  record : '$1'.
+records           ->  record : ['$1'].
 records           ->  record records : accumulate('$1', '$2').
+records           ->  soa_record : ['$1'].
 
 directive         ->  origin_directive : '$1'.
 directive         ->  ttl_default_directive : '$1'.
@@ -48,9 +49,9 @@ soa_record        ->  domain_name class soa name_server soa_options newline :
 soa_record        ->  domain_name soa name_server soa_options newline:
                         {type('$2'), flatten([name('$1'), '$3' | '$4'])}.
 soa_record        ->  dot ttl class soa name_server soa_options newline:
-                        {type('$4'), flatten(['$1', class('$2'), '$3' | '$5'])}.
+                        {type('$4'), flatten(['$1', '$2', class('$3'), '$5' | '$6'])}.
 soa_record        ->  dot class soa name_server soa_options newline:
-                        {type('$3'), flatten([class('$1'), '$2', '$4' | '$5'])}.
+                        {type('$3'), flatten(['$1', class('$2'), '$4' | '$5'])}.
 soa_record        ->  dot soa name_server soa_options newline:
                         {type('$2'), flatten(['$1', '$3' | '$4'])}.
 soa_record        ->  class soa name_server soa_options newline:
@@ -114,12 +115,12 @@ txt_record        -> txt quoted_text : {type('$1'), flatten(['$2'])}.
 
 % Preamble for all records except service and url
 
-preamble          ->  domain_name ttl class : [name('$1'), '$2', class('$3')].
-preamble          ->  domain_name ttl : [name('$1'), '$2'].
+preamble          ->  domain_name ttl class : [name('$1'), {ttl, '$2'}, class('$3')].
+preamble          ->  domain_name ttl : [name('$1'), {ttl, '$2'}].
 preamble          ->  domain_name class : [name('$1'), class('$2')].
 preamble          ->  domain_name : [name('$1')].
-preamble          ->  ttl class : ['$1', class('$2')].
-preamble          ->  ttl : ['$1'].
+preamble          ->  ttl class : [{ttl, '$1'}, class('$2')].
+preamble          ->  ttl : [{ttl, '$1'}].
 preamble          ->  class : [class('$1')].
 
 % Record components
@@ -193,9 +194,13 @@ expand_ttl({_, _, Ttl}) ->
 
 -spec expand(integer(), binary()) -> integer().
 expand(Int, <<"s">>) -> Int;
+expand(Int, <<"S">>) -> Int;
 expand(Int, <<"m">>) -> Int * 60;
 expand(Int, <<"h">>) -> Int * 60 * 60;
+expand(Int, <<"H">>) -> Int * 60 * 60;
 expand(Int, <<"d">>) -> Int * 60 * 60 * 24;
+expand(Int, <<"D">>) -> Int * 60 * 60 * 24;
 expand(Int, <<"w">>) -> Int * 60 * 60 * 24 * 7;
+expand(Int, <<"W">>) -> Int * 60 * 60 * 24 * 7;
 expand(Int, <<"M">>) -> Int * 60 * 60 * 24 * 30.
 

@@ -1,0 +1,87 @@
+defmodule ExDns.Resource.SVCB do
+  @moduledoc """
+  Manages the SVCB resource record (RFC 9460).
+
+  Type code 64.
+
+  ### SVCB RDATA format
+
+      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+      | SvcPriority (16 bits)       |
+      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+      | TargetName (variable)       |
+      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+      | SvcParams (variable)        |
+      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+  `TargetName` is not compressed (RFC 9460 §2.2). `SvcParams` is a
+  sequence of `<<key::16, length::16, value::binary-size(length)>>`.
+  Keys are surfaced as integers (e.g. 1 = `alpn`, 3 = `port`); values
+  remain raw binaries — pretty-printing per-key is left as a follow-up.
+
+  See also `ExDns.Resource.HTTPS` (type 65) which shares the wire
+  format.
+
+  """
+
+  @behaviour ExDns.Resource
+
+  defstruct [:name, :ttl, :class, :priority, :target, params: []]
+
+  alias ExDns.Message
+
+  @impl ExDns.Resource
+  def decode(<<priority::size(16), rest::binary>>, message) do
+    {:ok, target, params_bytes} = Message.decode_name(rest, message)
+    %__MODULE__{priority: priority, target: target, params: decode_params(params_bytes, [])}
+  end
+
+  defp decode_params(<<>>, acc), do: Enum.reverse(acc)
+
+  defp decode_params(
+         <<key::size(16), length::size(16), value::binary-size(length), rest::binary>>,
+         acc
+       ) do
+    decode_params(rest, [{key, value} | acc])
+  end
+
+  @impl ExDns.Resource
+  def encode(%__MODULE__{priority: priority, target: target, params: params}) do
+    <<priority::size(16), Message.encode_name(target)::binary, encode_params(params)::binary>>
+  end
+
+  defp encode_params(params) do
+    params
+    |> Enum.map(fn {key, value} ->
+      <<key::size(16), byte_size(value)::size(16), value::binary>>
+    end)
+    |> IO.iodata_to_binary()
+  end
+
+  @impl ExDns.Resource
+  def format(%__MODULE__{} = resource) do
+    [
+      ExDns.Resource.format_preamble(resource, "SVCB"),
+      Integer.to_string(resource.priority),
+      " ",
+      ExDns.Resource.to_fqdn(resource.target),
+      " ",
+      format_params(resource.params)
+    ]
+  end
+
+  @doc false
+  def format_params([]), do: ""
+
+  def format_params(params) do
+    params
+    |> Enum.map(fn {key, value} ->
+      "key#{key}=" <> Base.encode16(value, case: :lower)
+    end)
+    |> Enum.join(" ")
+  end
+
+  defimpl ExDns.Resource.Format do
+    def format(resource), do: ExDns.Resource.SVCB.format(resource)
+  end
+end
