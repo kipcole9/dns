@@ -146,6 +146,46 @@ defmodule ExDns.DNSSEC.ValidatorTest do
 
       assert {:error, :wrong_key} = Validator.verify_rrset(records, rrsig, dnskey)
     end
+
+    # Regression: the verifier's raw→DER converter for ECDSA r/s used
+    # to strip leading zeros without re-checking whether the trimmed
+    # value's MSB was set, producing non-canonical DER that OpenSSL
+    # rejected as a negative integer. With ~256-bit random r/s, the
+    # corner case (top byte 0x00, second byte ≥ 0x80) hit roughly
+    # 1/512 of the time per integer — flaky but rare. This test runs
+    # 200 fresh round-trips so a regression would have ~50%+ chance
+    # of being caught on every run.
+    test "round-trip never flakes across many fresh keypairs (regression)" do
+      records = [%A{name: "host.example.com", ttl: 3600, class: :in, ipv4: {192, 0, 2, 1}}]
+
+      Enum.each(1..200, fn _ ->
+        {public_key, private_key} = :crypto.generate_key(:ecdh, :secp256r1)
+        <<0x04, raw_pubkey::binary-size(64)>> = public_key
+
+        dnskey = %DNSKEY{flags: 256, protocol: 3, algorithm: 13, public_key: raw_pubkey}
+
+        template = %RRSIG{
+          name: "host.example.com",
+          ttl: 3600,
+          class: :in,
+          type_covered: :a,
+          algorithm: 13,
+          labels: 3,
+          original_ttl: 3600,
+          signature_expiration: 1_800_000_000,
+          signature_inception: 1_700_000_000,
+          key_tag: Validator.key_tag(dnskey),
+          signer: "example.com",
+          signature: <<>>
+        }
+
+        signed = build_signing_data(records, template)
+        der = :crypto.sign(:ecdsa, :sha256, signed, [private_key, :secp256r1])
+        rrsig = %RRSIG{template | signature: der_to_raw(der, 32)}
+
+        assert :ok = Validator.verify_rrset(records, rrsig, dnskey)
+      end)
+    end
   end
 
   describe "verify_rrset/3 — algorithm 15 (Ed25519)" do

@@ -114,7 +114,17 @@ defmodule ExDns.Recursor.Cache do
   @spec clear() :: :ok
   def clear do
     init()
-    :ets.delete_all_objects(@table)
+    # The cache table is owned by whichever process happened to call
+    # `init/0` first, and dies with that process. In tests, an
+    # application restart between `init/0` and `delete_all_objects/1`
+    # can leave a stale `@table` reference here, so swallow
+    # ArgumentError defensively — `clear/0` is best-effort.
+    try do
+      :ets.delete_all_objects(@table)
+    rescue
+      ArgumentError -> :ok
+    end
+
     :ok
   end
 
@@ -122,7 +132,12 @@ defmodule ExDns.Recursor.Cache do
   @spec size() :: non_neg_integer()
   def size do
     init()
-    :ets.info(@table, :size)
+
+    try do
+      :ets.info(@table, :size)
+    rescue
+      ArgumentError -> 0
+    end
   end
 
   defp now, do: :erlang.monotonic_time(:second)

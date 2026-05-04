@@ -377,14 +377,21 @@ defmodule ExDns.DNSSEC.Validator do
     <<0x30, byte_size(body)::size(8), body::binary>>
   end
 
-  defp encode_der_integer(<<top, _rest::binary>> = bytes) when top >= 0x80 do
-    # MSB set — prepend 0x00 to keep the value positive.
-    <<0x02, byte_size(bytes) + 1::size(8), 0x00, bytes::binary>>
-  end
-
   defp encode_der_integer(bytes) do
-    trimmed = trim_leading_zeros(bytes)
-    <<0x02, byte_size(trimmed)::size(8), trimmed::binary>>
+    case trim_leading_zeros(bytes) do
+      # MSB of the trimmed value is set — DER would read it as a
+      # negative integer. Prepend a single 0x00 to keep the value
+      # positive. This matters because raw-form ECDSA r/s are
+      # unsigned 256-bit integers; ~1/256 of them happen to have
+      # their leading byte zero, and of those ~1/2 have the next
+      # byte ≥ 0x80. Without the re-pad here, OpenSSL rejects the
+      # DER and verification flakes intermittently.
+      <<top, _::binary>> = trimmed when top >= 0x80 ->
+        <<0x02, byte_size(trimmed) + 1::size(8), 0x00, trimmed::binary>>
+
+      trimmed ->
+        <<0x02, byte_size(trimmed)::size(8), trimmed::binary>>
+    end
   end
 
   defp trim_leading_zeros(<<0, rest::binary>>) when byte_size(rest) > 0, do: trim_leading_zeros(rest)
