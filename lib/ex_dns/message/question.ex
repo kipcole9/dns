@@ -110,10 +110,19 @@ defmodule ExDns.Message.Question do
   """
   @spec encode(t()) :: binary()
 
-  def encode(%Message.Question{host: host, type: type, class: class}) do
+  def encode(%Message.Question{host: host, type: type, class: class} = question) do
     <<Message.encode_name(host)::binary, Resource.type_from(type)::size(16),
-      Resource.class_for(class)::size(16)>>
+      encode_qclass(class, question)::size(16)>>
   end
+
+  # Honour the QU bit (RFC 6762 §5.4): when the question struct says
+  # `unicast_response: true`, OR the high bit into the wire QCLASS so
+  # the responder knows to reply unicast.
+  defp encode_qclass(class, %Message.Question{unicast_response: true}) do
+    Bitwise.bor(Resource.class_for(class), 0x8000)
+  end
+
+  defp encode_qclass(class, _question), do: Resource.class_for(class)
 
   @doc """
   Compression-aware encoder. Returns `{binary, updated_offsets}`.
@@ -127,12 +136,12 @@ defmodule ExDns.Message.Question do
   """
   @spec encode(t(), non_neg_integer(), map()) :: {binary(), map()}
 
-  def encode(%Message.Question{host: host, type: type, class: class}, offset, offsets) do
+  def encode(%Message.Question{host: host, type: type, class: class} = question, offset, offsets) do
     {name_bytes, offsets} = Message.encode_name(host, offset, offsets)
 
     bytes =
       <<name_bytes::binary, Resource.type_from(type)::size(16),
-        Resource.class_for(class)::size(16)>>
+        encode_qclass(class, question)::size(16)>>
 
     {bytes, offsets}
   end

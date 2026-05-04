@@ -56,7 +56,11 @@ defmodule ExDns.Resolver.MDNS do
       true ->
         case Storage.lookup(question.host, question.type) do
           {:ok, _apex, [_ | _] = records} ->
-            response = build_response(message, question, records)
+            # Clear the QU flag from the echoed question — it's a
+            # query-only signal and mustn't ride back on the response
+            # wire.
+            echoed_question = %{question | unicast_response: false}
+            response = build_response(message, echoed_question, records)
 
             if question.unicast_response do
               {:unicast, response}
