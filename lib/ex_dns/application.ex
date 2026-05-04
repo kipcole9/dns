@@ -21,7 +21,7 @@ defmodule ExDns.Application do
         {ExDns.Listener.TCP,
          port: port, transport_options: [ip: {127, 0, 0, 1}, reuseaddr: true]},
         ExDns.Resolver.Supervisor
-      ] ++ doh_children() ++ cluster_children()
+      ] ++ doh_children() ++ mdns_children() ++ cluster_children()
 
     opts = [strategy: :one_for_one, name: ExDns.Supervisor]
 
@@ -105,6 +105,22 @@ defmodule ExDns.Application do
       [{ExDns.Cluster, []}]
     else
       []
+    end
+  end
+
+  # mDNS responder is opt-in (`:ex_dns, :mdns, [enabled: true]`) —
+  # binds the multicast socket only when explicitly requested.
+  defp mdns_children do
+    case Application.get_env(:ex_dns, :mdns) do
+      nil ->
+        []
+
+      options when is_list(options) ->
+        if Keyword.get(options, :enabled, false) do
+          [{ExDns.Listener.MDNS, options}]
+        else
+          []
+        end
     end
   end
 

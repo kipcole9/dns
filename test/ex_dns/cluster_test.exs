@@ -5,20 +5,25 @@ defmodule ExDns.ClusterTest do
 
   setup do
     # Start a fresh Cluster process per test so there's no leakage.
-    case Process.whereis(Cluster) do
-      nil -> :ok
-      pid -> GenServer.stop(pid)
-    end
-
+    safe_stop(Cluster)
     {:ok, _pid} = Cluster.start_link([])
-    on_exit(fn ->
-      case Process.whereis(Cluster) do
-        nil -> :ok
-        pid -> GenServer.stop(pid)
-      end
-    end)
+    on_exit(fn -> safe_stop(Cluster) end)
 
     :ok
+  end
+
+  defp safe_stop(name) do
+    case Process.whereis(name) do
+      nil ->
+        :ok
+
+      pid ->
+        try do
+          GenServer.stop(pid)
+        catch
+          :exit, _ -> :ok
+        end
+    end
   end
 
   test "the lone node elects itself as master" do

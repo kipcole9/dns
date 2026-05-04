@@ -24,14 +24,14 @@ defmodule ExDns.Message.Question do
   alias ExDns.Resource
   alias ExDns.Message
 
-  @keys [:host, :type, :class]
   @enforce_keys [:host]
-  defstruct @keys
+  defstruct host: nil, type: nil, class: nil, unicast_response: false
 
   @type t :: %__MODULE__{
           host: [binary],
           type: ExDns.Resource.type(),
-          class: ExDns.Resource.class()
+          class: ExDns.Resource.class(),
+          unicast_response: boolean()
         }
 
   # TODO: Note that there may be more than one question in a query but currently
@@ -56,10 +56,13 @@ defmodule ExDns.Message.Question do
 
   # End of message
   defp decode_question(%Message.Question{} = question, <<qt::size(16), qc::size(16)>>) do
+    {class, unicast_response} = decode_class_with_qu(qc)
+
     question = %Message.Question{
       question
       | type: Resource.decode_type(qt),
-        class: Resource.decode_class(qc)
+        class: class,
+        unicast_response: unicast_response
     }
 
     {:ok, question, nil}
@@ -67,13 +70,24 @@ defmodule ExDns.Message.Question do
 
   # More message bytes follow the question
   defp decode_question(%Message.Question{} = question, <<qt::size(16), qc::size(16), rest::binary>>) do
+    {class, unicast_response} = decode_class_with_qu(qc)
+
     question = %Message.Question{
       question
       | type: Resource.decode_type(qt),
-        class: Resource.decode_class(qc)
+        class: class,
+        unicast_response: unicast_response
     }
 
     {:ok, question, rest}
+  end
+
+  # The QU bit (RFC 6762 §5.4) is the top bit of the 16-bit QCLASS in
+  # an mDNS question. Strip it for normal class decoding and surface
+  # the bit alongside.
+  defp decode_class_with_qu(qc) when is_integer(qc) do
+    <<qu::size(1), class::size(15)>> = <<qc::size(16)>>
+    {Resource.decode_class(class), qu == 1}
   end
 
   @doc """
