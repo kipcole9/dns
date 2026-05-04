@@ -52,8 +52,64 @@ defmodule ExDns.Recursor.Iterator do
 
     case Cache.lookup(qname, qtype) do
       {:hit, records} -> {:ok, records}
-      :miss -> iterate(qname, qtype, max_depth, deadline, [])
+      {:nxdomain, _soa} -> {:error, :nxdomain}
+      {:nodata, _soa} -> {:ok, []}
+      :miss -> resolve_after_miss(qname, qtype, max_depth, deadline)
     end
+  end
+
+  # On a cache miss, try aggressive NSEC use (RFC 8198) before
+  # going to the network. If a cached NSEC chain in the closest
+  # known zone proves NXDOMAIN or NODATA for `qname`, we serve
+  # the negative answer locally and skip the upstream round-trip.
+  defp resolve_after_miss(qname, qtype, max_depth, deadline) do
+    case try_aggressive_nsec(qname, qtype) do
+      :nxdomain ->
+        :telemetry.execute(
+          [:ex_dns, :cache, :hit],
+          %{count: 1},
+          %{layer: :recursor, qname: qname, qtype: qtype, kind: :aggressive_nxdomain}
+        )
+
+        {:error, :nxdomain}
+
+      :nodata ->
+        :telemetry.execute(
+          [:ex_dns, :cache, :hit],
+          %{count: 1},
+          %{layer: :recursor, qname: qname, qtype: qtype, kind: :aggressive_nodata}
+        )
+
+        {:ok, []}
+
+      :no_proof ->
+        iterate(qname, qtype, max_depth, deadline, [])
+    end
+  end
+
+  # Walk up the qname's ancestors looking for the closest known
+  # zone, then ask `AggressiveNSEC` whether its cached NSEC chain
+  # proves the negative answer.
+  defp try_aggressive_nsec(qname, qtype) do
+    qname
+    |> ancestors()
+    |> Enum.find_value(:no_proof, fn zone ->
+      nsec_records = Cache.nsec_records_under(zone)
+
+      cond do
+        nsec_records == [] ->
+          nil
+
+        match?({:yes, _}, ExDns.DNSSEC.AggressiveNSEC.proves_nxdomain?(qname, nsec_records)) ->
+          :nxdomain
+
+        match?({:yes, _}, ExDns.DNSSEC.AggressiveNSEC.proves_nodata?(qname, qtype, nsec_records)) ->
+          :nodata
+
+        true ->
+          nil
+      end
+    end)
   end
 
   @doc """
@@ -243,12 +299,34 @@ defmodule ExDns.Recursor.Iterator do
   defp query_servers_for(qname, qtype, depth, deadline, trace) do
     {ns_owner, ns_ips} = closest_known_servers(qname)
 
-    case try_servers(ns_ips, qname, qtype, deadline) do
+    # RFC 9156: while we are still walking the delegation chain
+    # toward `qname`, only send the parent zone the minimum number
+    # of labels needed to reach the next cut, with qtype NS. The
+    # parent never sees the full leaf name. Once we have homed in
+    # on the authoritative server (ns_owner == qname), we send the
+    # original qtype.
+    {sent_qname, sent_qtype} = minimised_query(qname, qtype, ns_owner)
+
+    case try_servers(ns_ips, sent_qname, sent_qtype, deadline) do
       {:ok, response} ->
         handle_response(response, qname, qtype, ns_owner, depth, deadline, trace)
 
       {:error, _} = error ->
         error
+    end
+  end
+
+  # Decide what (qname, qtype) to actually put on the wire to this
+  # upstream. Returns the original pair when minimisation is off
+  # or when we have already reached the authoritative server for
+  # the full qname.
+  defp minimised_query(qname, qtype, ns_owner) do
+    alias ExDns.Recursor.QnameMinimisation
+
+    if QnameMinimisation.enabled?() and qname != ns_owner do
+      {QnameMinimisation.next_label(qname, ns_owner), :ns}
+    else
+      {qname, qtype}
     end
   end
 
@@ -408,11 +486,48 @@ defmodule ExDns.Recursor.Iterator do
 
   # ----- caching helpers ---------------------------------------------
 
-  defp cache_response(response, _qname, _qtype) do
+  defp cache_response(response, qname, qtype) do
     cache_section(response.answer)
     cache_section(response.authority)
     cache_section(response.additional)
+    cache_negative(response, qname, qtype)
   end
+
+  # RFC 2308: when the upstream's response is NXDOMAIN, cache the
+  # apex SOA against the qname so subsequent queries for *any*
+  # qtype on that name short-circuit. When it's NOERROR with no
+  # matching answer (NODATA), cache against {qname, qtype}.
+  defp cache_negative(%ExDns.Message{header: %{rc: 3}, authority: authority}, qname, qtype) do
+    case soa_in_authority(authority) do
+      nil -> :ok
+      soa -> Cache.put_negative(qname, qtype, :nxdomain, soa)
+    end
+  end
+
+  defp cache_negative(
+         %ExDns.Message{header: %{rc: 0}, answer: answer, authority: authority} = response,
+         qname,
+         qtype
+       ) do
+    cond do
+      matches_question?(response, qname, qtype) and answer != [] ->
+        :ok
+
+      true ->
+        case soa_in_authority(authority) do
+          nil -> :ok
+          soa -> Cache.put_negative(qname, qtype, :nodata, soa)
+        end
+    end
+  end
+
+  defp cache_negative(_, _, _), do: :ok
+
+  defp soa_in_authority(authority) when is_list(authority) do
+    Enum.find(authority, &match?(%ExDns.Resource.SOA{}, &1))
+  end
+
+  defp soa_in_authority(_), do: nil
 
   defp cache_referral(ns_records, additional) do
     cache_section(ns_records)

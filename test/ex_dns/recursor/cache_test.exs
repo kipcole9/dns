@@ -35,8 +35,8 @@ defmodule ExDns.Recursor.CacheTest do
     record = %A{ipv4: {1, 2, 3, 4}}
     Cache.put("short.lived", :a, [record], 60)
     # Force expiry by clamping the stored expiry to the past.
-    [{key, records, _}] = :ets.lookup(:ex_dns_recursor_cache, {"short.lived", :a})
-    :ets.insert(:ex_dns_recursor_cache, {key, records, :erlang.monotonic_time(:second) - 1})
+    [{key, kind, payload, _}] = :ets.lookup(:ex_dns_recursor_cache, {"short.lived", :a})
+    :ets.insert(:ex_dns_recursor_cache, {key, kind, payload, :erlang.monotonic_time(:second) - 1})
 
     assert :miss = Cache.lookup("short.lived", :a)
     assert Cache.size() == 0

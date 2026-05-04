@@ -67,10 +67,10 @@ defmodule ExDns.Resolver.Default do
     set_response(message, [], rcode: 4, aa: 0, authority: [])
   end
 
-  # NOTIFY (RFC 1996, opcode 4) — acknowledge with NOERROR. AA is set
-  # if we are authoritative for the named zone. We do not currently
-  # trigger a refresh because we have no secondary-zone configuration;
-  # that's a follow-up.
+  # NOTIFY (RFC 1996, opcode 4) — acknowledge with NOERROR and
+  # trigger an immediate refresh on the matching secondary-zone
+  # state machine when one is running. AA is set if we hold the
+  # zone (either as primary or secondary).
   def resolve(%Message{header: %Header{qr: 0, oc: 4}, question: question} = message) do
     require Logger
 
@@ -78,6 +78,10 @@ defmodule ExDns.Resolver.Default do
       case question do
         %Question{host: host} ->
           Logger.info("Received NOTIFY for #{inspect(host)}")
+          # Best-effort kick to the secondary state machine. If
+          # we are not a secondary for this zone the call returns
+          # `{:error, :no_secondary_for_zone}` and we ignore it.
+          _ = ExDns.Zone.Secondary.notify(host)
           if Storage.find_zone(host), do: 1, else: 0
 
         _ ->

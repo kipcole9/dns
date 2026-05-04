@@ -129,6 +129,43 @@ defmodule ExDns.Integration.DoHTest do
       {:ok, {{_, status, _}, _, _}} = :httpc.request(:get, {url, []}, [], [])
       assert status == 400
     end
+
+    test "returns 400 when the dns parameter exceeds the size limit" do
+      huge = String.duplicate("a", 9_000)
+      url = ~c"http://#{@host}:#{@doh_port}/dns-query?dns=#{huge}"
+      {:ok, {{_, status, _}, _, _}} = :httpc.request(:get, {url, []}, [], [])
+      assert status == 400
+    end
+  end
+
+  describe "RFC 8484 §5.1 Cache-Control" do
+    test "successful response includes Cache-Control: max-age tied to TTL" do
+      query_bytes = Message.encode(make_query("doh.test", :a))
+      url = ~c"http://#{@host}:#{@doh_port}/dns-query"
+
+      {:ok, {{_, 200, _}, headers, _body}} =
+        :httpc.request(
+          :post,
+          {url, [], ~c"application/dns-message", query_bytes},
+          [],
+          body_format: :binary
+        )
+
+      cache_control = header(headers, ~c"cache-control")
+      assert cache_control =~ ~r/max-age=\d+/
+
+      [_, max_age] = Regex.run(~r/max-age=(\d+)/, cache_control)
+      # The A record TTL is 60s; SOA TTL is 86_400s. The minimum
+      # across answer + authority is 60.
+      assert String.to_integer(max_age) <= 60
+    end
+  end
+
+  defp header(headers, name) do
+    Enum.find_value(headers, fn
+      {^name, value} -> to_string(value)
+      _ -> nil
+    end)
   end
 
   describe "unknown paths" do

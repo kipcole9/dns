@@ -164,6 +164,12 @@ defmodule ExDns.Metrics do
         event_name: [:ex_dns, :cluster, :master, :elected],
         description: "Number of times this node was elected master.",
         tags: [:zone]
+      ),
+      counter(
+        "dns.rrl.decisions.total",
+        event_name: [:ex_dns, :rrl, :decision],
+        description: "RRL decisions, tagged by outcome and response kind.",
+        tags: [:decision, :response_kind]
       )
     ]
   end

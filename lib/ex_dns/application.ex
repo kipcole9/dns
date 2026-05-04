@@ -4,7 +4,24 @@ defmodule ExDns.Application do
   use Application
 
   @impl true
+  def prep_stop(state) do
+    # Run the drain BEFORE the supervisor starts shutting children
+    # down. This flips the readiness probe to "not ready", closes
+    # listener sockets so no more queries arrive, and waits for
+    # in-flight workers to finish (bounded by the configured
+    # timeout, default 30s).
+    options = Application.get_env(:ex_dns, :drain, [])
+    _ = ExDns.Drain.drain(options)
+    state
+  end
+
+  @impl true
   def start(_type, _args) do
+    # Clear any drain flag left by a previous instance of the
+    # application in this BEAM (relevant in tests that stop and
+    # restart the supervisor).
+    ExDns.Drain.clear_draining()
+
     # The configured storage backend is initialised eagerly so that any
     # zones configured for autoload below can be inserted as the
     # supervision tree comes up.
@@ -23,10 +40,13 @@ defmodule ExDns.Application do
         ExDns.Resolver.Supervisor
       ] ++
         doh_children() ++
+        dot_children() ++
         mdns_children() ++
         cluster_children() ++
         metrics_children() ++
-        dnstap_children()
+        dnstap_children() ++
+        health_children() ++
+        secondary_zone_children()
 
     opts = [strategy: :one_for_one, name: ExDns.Supervisor]
 
@@ -125,6 +145,43 @@ defmodule ExDns.Application do
     }
   end
 
+  # Returns a Bandit listener serving the /healthz + /readyz probes
+  # when `:ex_dns, :health, [enabled: true, port: ...]` is configured.
+  # Off by default. Bound to all interfaces because orchestrators
+  # typically probe from the host network namespace.
+  defp health_children do
+    case Application.get_env(:ex_dns, :health) do
+      nil ->
+        []
+
+      options when is_list(options) ->
+        if Keyword.get(options, :enabled, false) do
+          port = Keyword.get(options, :port, 9569)
+
+          [
+            Supervisor.child_spec(
+              {Bandit, plug: ExDns.Health, scheme: :http, port: port},
+              id: ExDns.Health
+            )
+          ]
+        else
+          []
+        end
+    end
+  end
+
+  # Starts one `ExDns.Zone.Secondary` per entry in
+  # `:ex_dns, :secondary_zones`, all under
+  # `ExDns.Zone.Secondary.Supervisor`. When no zones are
+  # configured the supervisor is omitted entirely so an empty
+  # config has zero supervision-tree footprint.
+  defp secondary_zone_children do
+    case Application.get_env(:ex_dns, :secondary_zones, []) do
+      [] -> []
+      zones when is_list(zones) -> [ExDns.Zone.Secondary.Supervisor]
+    end
+  end
+
   # Returns the dnstap file-sink child spec when
   # `:ex_dns, :dnstap, [enabled: true, path: ...]` is configured. The
   # handler that pipes telemetry events into the sink is attached
@@ -164,6 +221,23 @@ defmodule ExDns.Application do
       options when is_list(options) ->
         if Keyword.get(options, :enabled, false) do
           [ExDns.Metrics.child_spec(options)]
+        else
+          []
+        end
+    end
+  end
+
+  # Returns the DoT (DNS-over-TLS, RFC 7858) child spec when
+  # `:ex_dns, :dot, [enabled: true, certfile: ..., keyfile: ...]`
+  # is configured. Off by default.
+  defp dot_children do
+    case Application.get_env(:ex_dns, :dot) do
+      nil ->
+        []
+
+      options when is_list(options) ->
+        if Keyword.get(options, :enabled, false) do
+          [ExDns.Listener.DoT.child_spec(options)]
         else
           []
         end

@@ -46,10 +46,33 @@ defmodule ExDns.Resolver.Worker do
               transport: :udp
             )
 
-          response = resolver.resolve(request)
+          raw_response = resolver.resolve(request)
+          response = ExDns.Cookies.PostProcess.process(query, raw_response, address)
           budget = udp_budget(query)
-          response_bytes = Message.encode_for_udp(response, budget)
-          send_udp_response(response_bytes, address, port, socket)
+
+          # RRL: ask whether this response is allowed out, may be
+          # truncated to force TCP retry, or should be silently
+          # dropped. Cookie-validated queries bypass the limiter.
+          rrl_options = [
+            address: address,
+            cookie_validated: cookie_validated?(query, address)
+          ]
+
+          rrl_decision = rrl_check(query, response, rrl_options)
+
+          case rrl_decision do
+            :allow ->
+              response_bytes = Message.encode_for_udp(response, budget)
+              send_udp_response(response_bytes, address, port, socket)
+
+            :slip ->
+              truncated = truncate_response(response)
+              response_bytes = Message.encode_for_udp(truncated, budget)
+              send_udp_response(response_bytes, address, port, socket)
+
+            :drop ->
+              :ok
+          end
 
           :telemetry.execute(
             [:ex_dns, :query, :stop],
@@ -136,6 +159,64 @@ defmodule ExDns.Resolver.Worker do
   # the response. The hybrid resolver already sets AD on validated
   # answers; richer status will land with full resolver instrumentation.
   defp validation_status(_answer), do: :none
+
+  # ----- RRL helpers ------------------------------------------------
+
+  # Did the query carry a verified DNS Cookie? Used to exempt
+  # cookie-validated queries from RRL — they are demonstrably not
+  # spoofed.
+  defp cookie_validated?(%Message{additional: additional}, address) when is_list(additional) do
+    with %ExDns.Resource.OPT{options: opts} <- Enum.find(additional, &match?(%ExDns.Resource.OPT{}, &1)),
+         {:ok, client_cookie, server_cookie} when is_binary(server_cookie) <-
+           ExDns.Cookies.find_in_options(opts),
+         :ok <- ExDns.Cookies.verify(client_cookie, server_cookie, address) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp cookie_validated?(_, _), do: false
+
+  # Categorise the response so RRL can budget different traffic
+  # patterns separately (NXDOMAIN flood vs. legit answers).
+  defp response_kind(%Message{header: %{rc: rcode, aa: aa}, answer: answer}) do
+    cond do
+      rcode == 3 -> :nxdomain
+      rcode != 0 -> :error
+      aa == 0 -> :referral
+      answer == [] -> :nodata
+      true -> :answer
+    end
+  end
+
+  defp response_kind(_), do: :error
+
+  defp rrl_check(%Message{question: %{host: host, type: type}} = _query, response, options) do
+    ExDns.RRL.check(
+      Keyword.get(options, :address, {0, 0, 0, 0}),
+      host || "",
+      type,
+      response_kind(response),
+      options
+    )
+  end
+
+  defp rrl_check(_query, _response, _options), do: :allow
+
+  # Build a TC=1 (truncated) response with empty sections — RFC 1035
+  # §4.1.1: the client should retry over TCP. RRL's "slip" mechanism
+  # uses this so legit clients caught in a punished bucket can
+  # recover.
+  defp truncate_response(%Message{header: header} = response) do
+    %Message{
+      response
+      | header: %{header | tc: 1, anc: 0, auc: 0, adc: 0},
+        answer: [],
+        authority: [],
+        additional: []
+    }
+  end
 
   # The UDP budget is the OPT record's advertised payload size, clamped
   # to a sensible upper bound. When no OPT was supplied, fall back to

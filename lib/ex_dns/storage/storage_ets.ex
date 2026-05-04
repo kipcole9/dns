@@ -121,8 +121,23 @@ defmodule ExDns.Storage.ETS do
     # Record a journal entry. Failures (no SOA, no advance, no
     # previous zone) are silently ignored — they're normal during
     # initial load and shouldn't block the put.
-    if previous_records != [] do
-      _ = ExDns.Zone.Journal.record(apex, previous_records, records)
+    journal_result =
+      if previous_records != [] do
+        ExDns.Zone.Journal.record(apex, previous_records, records)
+      else
+        :no_change
+      end
+
+    # Fire outbound NOTIFYs to configured secondaries when the
+    # serial actually advanced. Initial loads (no previous zone)
+    # don't notify because secondaries don't yet know us.
+    case journal_result do
+      {:ok, _entry} ->
+        new_soa = Enum.find(records, &match?(%ExDns.Resource.SOA{}, &1))
+        _ = ExDns.Notify.notify_change(apex, new_soa)
+
+      _ ->
+        :ok
     end
 
     :ok

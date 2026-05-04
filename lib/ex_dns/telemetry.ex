@@ -133,7 +133,15 @@ defmodule ExDns.Telemetry do
       [:ex_dns, :tsig, :verify, :stop],
       [:ex_dns, :axfr, :transfer, :start],
       [:ex_dns, :axfr, :transfer, :stop],
-      [:ex_dns, :cluster, :master, :elected]
+      [:ex_dns, :cluster, :master, :elected],
+      [:ex_dns, :drain, :start],
+      [:ex_dns, :drain, :stop],
+      [:ex_dns, :rrl, :decision],
+      [:ex_dns, :notify, :sent],
+      [:ex_dns, :transfer, :acl, :decision],
+      [:ex_dns, :secondary, :loaded],
+      [:ex_dns, :secondary, :transfer_failed],
+      [:ex_dns, :zone, :reload, :stop]
     ]
   end
 

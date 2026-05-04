@@ -33,8 +33,7 @@ defmodule ExDns.Zone.Journal do
   """
 
   alias ExDns.Resource.SOA
-
-  @table :ex_dns_zone_journal
+  alias ExDns.Zone.Journal.Storage
 
   defmodule Entry do
     @moduledoc """
@@ -61,27 +60,13 @@ defmodule ExDns.Zone.Journal do
 
   ### Examples
 
-      iex> ExDns.Zone.Journal.init()
-      :ex_dns_zone_journal
+      iex> ExDns.Zone.Journal.init() in [:ex_dns_zone_journal, :ex_dns_zone_journal_dets]
+      true
 
   """
-  @spec init() :: atom()
+  @spec init() :: term()
   def init do
-    case :ets.whereis(@table) do
-      :undefined ->
-        :ets.new(@table, [
-          :ordered_set,
-          :named_table,
-          :public,
-          read_concurrency: true,
-          write_concurrency: true
-        ])
-
-      _ ->
-        @table
-    end
-
-    @table
+    Storage.backend().init(Storage.backend_options())
   end
 
   @doc """
@@ -100,8 +85,7 @@ defmodule ExDns.Zone.Journal do
   @spec clear() :: :ok
   def clear do
     init()
-    :ets.delete_all_objects(@table)
-    :ok
+    Storage.backend().clear()
   end
 
   @doc """
@@ -164,7 +148,7 @@ defmodule ExDns.Zone.Journal do
         added: added
       }
 
-      :ets.insert(@table, {{normalize(apex), new_serial}, entry})
+      Storage.backend().insert(normalize(apex), new_serial, entry)
       {:ok, entry}
     else
       {:error, :no_soa} -> {:error, :no_soa}
@@ -201,11 +185,10 @@ defmodule ExDns.Zone.Journal do
   def since(apex, from_serial)
       when is_binary(apex) and is_integer(from_serial) and from_serial >= 0 do
     init()
-    apex = normalize(apex)
 
-    @table
-    |> :ets.match_object({{apex, :"$1"}, :"$2"})
-    |> Enum.map(fn {{_, _serial}, entry} -> entry end)
+    apex
+    |> normalize()
+    |> Storage.backend().entries()
     |> Enum.filter(fn %Entry{from_serial: from} -> from >= from_serial end)
     |> Enum.sort_by(& &1.to_serial)
   end
@@ -232,11 +215,11 @@ defmodule ExDns.Zone.Journal do
   @spec latest_serial(binary()) :: non_neg_integer() | nil
   def latest_serial(apex) when is_binary(apex) do
     init()
-    apex = normalize(apex)
 
-    @table
-    |> :ets.match_object({{apex, :"$1"}, :"$2"})
-    |> Enum.map(fn {{_, serial}, _} -> serial end)
+    apex
+    |> normalize()
+    |> Storage.backend().entries()
+    |> Enum.map(& &1.to_serial)
     |> case do
       [] -> nil
       serials -> Enum.max(serials)

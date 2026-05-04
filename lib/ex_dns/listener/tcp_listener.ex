@@ -87,7 +87,19 @@ defmodule ExDns.Listener.TCP do
               start_metadata
             )
 
-            response = ExDns.resolver_module().resolve(request)
+            raw_response =
+              case transfer_acl_decision(query, source_ip, tsig_context) do
+                :allow ->
+                  ExDns.resolver_module().resolve(request)
+
+                :refuse ->
+                  refused_response(query)
+              end
+
+            response =
+              query
+              |> ExDns.Cookies.PostProcess.process(raw_response, source_ip)
+              |> maybe_pad(query)
 
             :telemetry.execute(
               [:ex_dns, :query, :stop],
@@ -152,6 +164,46 @@ defmodule ExDns.Listener.TCP do
 
     defp response_metadata(_) do
       %{rcode: nil, answer_count: 0, validation: :none, cache: :none}
+    end
+
+    # Only AXFR/IXFR queries are gated by the transfer ACL — every
+    # other query type passes through unconditionally.
+    defp transfer_acl_decision(%ExDns.Message{question: %{type: type, host: host}}, source_ip, tsig_context)
+         when type in [:axfr, :ixfr] do
+      key_name =
+        case tsig_context do
+          %{key_name: name} -> name
+          _ -> nil
+        end
+
+      ExDns.Transfer.ACL.check(host, source_ip, key_name)
+    end
+
+    defp transfer_acl_decision(_, _, _), do: :allow
+
+    # Apply EDNS padding when the query advertised it. RFC 8467
+    # §6.2: "REQUIRED" on encrypted transports — `tcp_listener` is
+    # used by both plain TCP and DoT, but the gating
+    # `EDNSPadding.requested?/1` ensures we only pad clients that
+    # asked.
+    defp maybe_pad(response, query) do
+      if ExDns.EDNSPadding.requested?(query) do
+        ExDns.EDNSPadding.pad(response)
+      else
+        response
+      end
+    end
+
+    # Build a REFUSED response that mirrors the query's header so
+    # the TSIG signer can still chain its MAC.
+    defp refused_response(%ExDns.Message{header: header} = query) do
+      %ExDns.Message{
+        query
+        | header: %{header | qr: 1, aa: 0, ra: 0, ad: 0, cd: 0, rc: 5, anc: 0, auc: 0, adc: 0},
+          answer: [],
+          authority: [],
+          additional: []
+      }
     end
   end
 end
