@@ -155,7 +155,7 @@ defmodule ExDns.Resolver.Default do
       {:error, :nxdomain} ->
         case Storage.find_zone(qname) do
           nil -> set_response(message, [], rcode: 3, aa: 0, authority: [])
-          apex -> set_response(message, [], rcode: 3, aa: 1, authority: soa_authority(apex))
+          apex -> set_response(message, [], rcode: 3, aa: 1, authority: negative_authority(apex, qname, :nxdomain))
         end
     end
   end
@@ -170,11 +170,13 @@ defmodule ExDns.Resolver.Default do
         # NODATA — name exists in the zone but has no records of the
         # requested type. RFC 2308 says we should put the apex SOA in
         # the authority section so the client can compute the negative
-        # caching TTL.
+        # caching TTL. When DNSSEC is enabled for the zone, the NSEC
+        # covering qname is added too so the client can validate the
+        # negative answer.
         set_response(message, [],
           rcode: 0,
           aa: 1,
-          authority: soa_authority(apex)
+          authority: negative_authority(apex, qname, :nodata)
         )
 
       {:partial, records, apex} ->
@@ -183,11 +185,16 @@ defmodule ExDns.Resolver.Default do
         # gathered as the answer with rcode = NOERROR; include the SOA
         # in authority for negative caching of the trailing name.
         records = Enum.map(records, &normalize_class/1)
+        # The NSEC proof goes at the chain's terminal name.
+        terminal = case List.last(records) do
+          %ExDns.Resource.CNAME{server: target} -> target
+          _ -> qname
+        end
 
         set_response(message, records,
           rcode: 0,
           aa: 1,
-          authority: soa_authority(apex)
+          authority: negative_authority(apex, terminal, :nodata)
         )
 
       :nxdomain ->
@@ -202,7 +209,7 @@ defmodule ExDns.Resolver.Default do
             set_response(message, [],
               rcode: 3,
               aa: 1,
-              authority: soa_authority(apex)
+              authority: negative_authority(apex, qname, :nxdomain)
             )
         end
     end
@@ -313,6 +320,50 @@ defmodule ExDns.Resolver.Default do
     case Storage.lookup(apex, apex, :soa) do
       {:ok, _apex, records} -> Enum.map(records, &normalize_class/1)
       {:error, :nxdomain} -> []
+    end
+  end
+
+  # Returns the negative-response authority section: the apex SOA plus
+  # (when DNSSEC is enabled for the zone) the NSEC record proving the
+  # negative answer.
+  #
+  # * `:nodata` — NSEC AT the queried name; its type bitmap omits the
+  #   queried qtype, proving "this name exists but lacks that type".
+  # * `:nxdomain` — NSEC COVERING the queried name; owner < qname <
+  #   next, proving "no name lives in this gap".
+  defp negative_authority(apex, qname, kind) do
+    soa_authority(apex) ++ nsec_authority(apex, qname, kind)
+  end
+
+  defp nsec_authority(apex, qname, kind) do
+    case ExDns.DNSSEC.KeyStore.get_signing_key(apex) do
+      nil ->
+        # Zone is not DNSSEC-signed; no NSEC needed.
+        []
+
+      _signing_key ->
+        case Storage.dump_zone(apex) do
+          {:ok, records} ->
+            chain = ExDns.DNSSEC.NSEC.generate(apex, records)
+            nsec_for(chain, qname, kind)
+
+          _ ->
+            []
+        end
+    end
+  end
+
+  defp nsec_for(chain, qname, :nodata) do
+    case ExDns.DNSSEC.NSEC.for_owner(chain, qname) do
+      nil -> []
+      nsec -> [nsec]
+    end
+  end
+
+  defp nsec_for(chain, qname, :nxdomain) do
+    case ExDns.DNSSEC.NSEC.covering(chain, qname) do
+      nil -> []
+      nsec -> [nsec]
     end
   end
 

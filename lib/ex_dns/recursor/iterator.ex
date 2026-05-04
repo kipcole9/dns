@@ -56,6 +56,95 @@ defmodule ExDns.Recursor.Iterator do
     end
   end
 
+  @doc """
+  Resolves and validates DNSSEC. Returns `{:ok, records, status}`
+  where `status` is one of:
+
+  * `:secure` — RRSIG verified against an in-cache DNSKEY whose key
+    tag matches.
+  * `:insecure` — the answer carried no RRSIGs.
+  * `:bogus` — an RRSIG was present but the signature did not
+    verify, or the signer's DNSKEY couldn't be located.
+  * `:indeterminate` — DNSKEY for the signer could not be fetched.
+
+  This implementation performs **one-level** validation: it verifies
+  the answer's RRSIG against the signer's DNSKEY, but does not yet
+  walk the parent DS chain up to the IANA root anchor. That's the
+  next layer; an answer marked `:secure` here means
+  "signed by someone holding the apex private key" — useful for
+  catching tampering in transit, but not yet a full DNSSEC trust
+  proof.
+
+  ### Returns
+
+  * `{:ok, records, status}` on a successful resolve (records may be
+    empty for NODATA-style answers).
+  * `{:error, reason}` on transport failures (same as `resolve/3`).
+
+  """
+  @spec resolve_validated(binary(), atom(), keyword()) ::
+          {:ok, [struct()], :secure | :insecure | :bogus | :indeterminate}
+          | {:error, atom()}
+  def resolve_validated(qname, qtype, options \\ []) do
+    with {:ok, records} <- resolve(qname, qtype, options) do
+      {answer, rrsigs} = split_rrsigs(records)
+      status = classify(answer, rrsigs, qtype, options)
+      {:ok, answer, status}
+    end
+  end
+
+  defp split_rrsigs(records) do
+    Enum.split_with(records, fn r -> not match?(%ExDns.Resource.RRSIG{}, r) end)
+  end
+
+  defp classify(_answer, [], _qtype, _options), do: :insecure
+
+  defp classify(answer, [first_rrsig | _], _qtype, options) do
+    deadline = monotonic_ms() + Keyword.get(options, :max_time_ms, @max_time_ms)
+
+    case fetch_dnskey(first_rrsig.signer, deadline) do
+      {:ok, dnskeys} ->
+        case Enum.find(dnskeys, fn k ->
+               ExDns.DNSSEC.Validator.key_tag(k) == first_rrsig.key_tag and
+                 k.algorithm == first_rrsig.algorithm
+             end) do
+          nil ->
+            :bogus
+
+          dnskey ->
+            case ExDns.DNSSEC.Validator.verify_rrset(answer, first_rrsig, dnskey) do
+              :ok -> :secure
+              {:error, _} -> :bogus
+            end
+        end
+
+      _ ->
+        :indeterminate
+    end
+  end
+
+  defp fetch_dnskey(signer, deadline) do
+    max_depth = @max_depth
+
+    case resolve(signer, :dnskey, max_time_ms: max(deadline - monotonic_ms(), 100)) do
+      {:ok, records} ->
+        dnskeys = Enum.filter(records, &match?(%ExDns.Resource.DNSKEY{}, &1))
+
+        case dnskeys do
+          [] -> :error
+          _ -> {:ok, dnskeys}
+        end
+
+      _ ->
+        :error
+    end
+    |> case do
+      {:ok, _} = ok -> ok
+      _ -> :error
+    end
+    |> tap(fn _ -> _ = max_depth end)
+  end
+
   defp iterate(_qname, _qtype, 0, _deadline, _trace), do: {:error, :max_depth}
 
   defp iterate(qname, qtype, depth, deadline, trace) do
@@ -200,7 +289,10 @@ defmodule ExDns.Recursor.Iterator do
           payload_size: 1232,
           extended_rcode: 0,
           version: 0,
-          dnssec_ok: 0,
+          # Always advertise DO so upstream servers include RRSIGs
+          # when they're available; the validator and resolver chain
+          # need them to do anything meaningful.
+          dnssec_ok: 1,
           z: 0,
           options: []
         }

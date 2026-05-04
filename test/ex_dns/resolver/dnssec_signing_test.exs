@@ -135,4 +135,41 @@ defmodule ExDns.Resolver.DNSSECSigningTest do
     assert rrsig.type_covered == :soa
     assert :ok = Validator.verify_rrset([soa], rrsig, dnskey)
   end
+
+  test "DO=1 NXDOMAIN response carries an NSEC + RRSIG", %{dnskey: dnskey} do
+    response = Default.resolve(query("missing.#{@apex}", :a, true))
+
+    assert response.header.rc == 3
+
+    nsec_records = Enum.filter(response.authority, &match?(%ExDns.Resource.NSEC{}, &1))
+    rrsigs = Enum.filter(response.authority, &match?(%RRSIG{}, &1))
+
+    assert length(nsec_records) == 1
+    nsec = hd(nsec_records)
+
+    nsec_rrsig = Enum.find(rrsigs, fn r -> r.type_covered == :nsec end)
+    assert nsec_rrsig != nil
+    assert :ok = Validator.verify_rrset([nsec], nsec_rrsig, dnskey)
+
+    soa_rrsig = Enum.find(rrsigs, fn r -> r.type_covered == :soa end)
+    assert soa_rrsig != nil
+  end
+
+  test "DO=1 NODATA response carries an NSEC at the queried name", %{dnskey: dnskey} do
+    # Query AAAA for the apex (which has only A) → NODATA
+    response = Default.resolve(query(@apex, :aaaa, true))
+
+    assert response.header.rc == 0
+    assert response.answer == []
+
+    nsec_records = Enum.filter(response.authority, &match?(%ExDns.Resource.NSEC{}, &1))
+    assert length(nsec_records) == 1
+    nsec = hd(nsec_records)
+    # NODATA NSEC is AT the queried name.
+    assert nsec.name == @apex
+
+    rrsigs = Enum.filter(response.authority, &match?(%RRSIG{}, &1))
+    nsec_rrsig = Enum.find(rrsigs, fn r -> r.type_covered == :nsec end)
+    assert :ok = Validator.verify_rrset([nsec], nsec_rrsig, dnskey)
+  end
 end

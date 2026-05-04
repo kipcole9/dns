@@ -46,14 +46,31 @@ defmodule ExDns.Resolver.Hybrid do
   defp should_recurse?(_), do: false
 
   defp recurse(%Message{header: %Header{} = header, question: %Question{host: qname, type: qtype}} = query) do
-    case Iterator.resolve(qname, qtype) do
-      {:ok, records} ->
+    do_bit = client_do_bit?(query)
+
+    result =
+      if do_bit do
+        Iterator.resolve_validated(qname, qtype)
+      else
+        case Iterator.resolve(qname, qtype) do
+          {:ok, records} -> {:ok, records, :insecure}
+          other -> other
+        end
+      end
+
+    case result do
+      {:ok, records, status} ->
+        # Per RFC 4035 §3.2.3, AD is set only when the response is
+        # both DO-aware AND verifiably secure. We never set AD on
+        # responses to clients that didn't ask for DNSSEC.
+        ad = if do_bit and status == :secure, do: 1, else: 0
+
         new_header = %Header{
           header
           | qr: 1,
             aa: 0,
             ra: 1,
-            ad: 0,
+            ad: ad,
             cd: 0,
             rc: 0,
             anc: length(records),
@@ -77,6 +94,15 @@ defmodule ExDns.Resolver.Hybrid do
         respond(query, [], 2)
     end
   end
+
+  defp client_do_bit?(%Message{additional: additional}) when is_list(additional) do
+    Enum.any?(additional, fn
+      %ExDns.Resource.OPT{dnssec_ok: 1} -> true
+      _ -> false
+    end)
+  end
+
+  defp client_do_bit?(_), do: false
 
   defp respond(%Message{header: %Header{} = header} = query, answers, rcode) do
     %Message{
