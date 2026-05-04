@@ -21,17 +21,53 @@ defmodule ExDns.Application do
         {ExDns.Listener.TCP,
          port: port, transport_options: [ip: {127, 0, 0, 1}, reuseaddr: true]},
         ExDns.Resolver.Supervisor
-      ] ++ doh_children() ++ mdns_children() ++ cluster_children()
+      ] ++
+        doh_children() ++
+        mdns_children() ++
+        cluster_children() ++
+        metrics_children() ++
+        dnstap_children()
 
     opts = [strategy: :one_for_one, name: ExDns.Supervisor]
 
     case Supervisor.start_link(children, opts) do
       {:ok, _pid} = ok ->
         autoload_zones()
+        attach_optional_telemetry_handlers()
         ok
 
       other ->
         other
+    end
+  end
+
+  # Optional telemetry handlers wired in based on application config.
+  # Each is opt-in so the production footprint stays at zero until an
+  # operator turns the feature on.
+  defp attach_optional_telemetry_handlers do
+    case Application.get_env(:ex_dns, :structured_logs) do
+      options when is_list(options) ->
+        if Keyword.get(options, :enabled, false) do
+          _ = ExDns.Telemetry.StructuredLogger.attach()
+        end
+
+      _ ->
+        :ok
+    end
+
+    # The dnstap sink is started under the supervisor; here we just
+    # attach the handler that funnels events into it.
+    case Application.get_env(:ex_dns, :dnstap) do
+      options when is_list(options) ->
+        if Keyword.get(options, :enabled, false) do
+          case Process.whereis(ExDns.Telemetry.Dnstap.FileSink) do
+            nil -> :ok
+            sink -> _ = ExDns.Telemetry.Dnstap.attach(sink)
+          end
+        end
+
+      _ ->
+        :ok
     end
   end
 
@@ -87,6 +123,51 @@ defmodule ExDns.Application do
       port: ExDns.listener_port(),
       socket_options: socket_options()
     }
+  end
+
+  # Returns the dnstap file-sink child spec when
+  # `:ex_dns, :dnstap, [enabled: true, path: ...]` is configured. The
+  # handler that pipes telemetry events into the sink is attached
+  # by `attach_optional_telemetry_handlers/0` after the supervisor
+  # comes up.
+  defp dnstap_children do
+    case Application.get_env(:ex_dns, :dnstap) do
+      nil ->
+        []
+
+      options when is_list(options) ->
+        if Keyword.get(options, :enabled, false) do
+          path = Keyword.get(options, :path) || raise ":ex_dns, :dnstap requires :path"
+
+          [
+            Supervisor.child_spec(
+              {ExDns.Telemetry.Dnstap.FileSink,
+               path: path, name: ExDns.Telemetry.Dnstap.FileSink},
+              id: ExDns.Telemetry.Dnstap.FileSink
+            )
+          ]
+        else
+          []
+        end
+    end
+  end
+
+  # Returns the Prometheus metrics exporter child spec when
+  # `:ex_dns, :metrics, [enabled: true]` is configured. Off by default
+  # so the production footprint stays at zero until an operator opts
+  # in.
+  defp metrics_children do
+    case Application.get_env(:ex_dns, :metrics) do
+      nil ->
+        []
+
+      options when is_list(options) ->
+        if Keyword.get(options, :enabled, false) do
+          [ExDns.Metrics.child_spec(options)]
+        else
+          []
+        end
+    end
   end
 
   # Returns the DoH child spec when `:ex_dns, :doh` is configured.

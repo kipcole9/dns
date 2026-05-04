@@ -96,6 +96,15 @@ defmodule ExDns.Storage.ETS do
     init()
     apex = normalize(apex)
 
+    # Snapshot the previous zone (if any) so we can compute an IXFR
+    # journal entry for the change. We do this *before* the in-place
+    # delete so the diff is meaningful.
+    previous_records =
+      case dump_zone(apex) do
+        {:ok, records} -> records
+        {:error, :not_loaded} -> []
+      end
+
     delete_zone(apex)
 
     table =
@@ -108,6 +117,14 @@ defmodule ExDns.Storage.ETS do
 
     Enum.each(records, fn record -> insert_record(table, record) end)
     :ets.insert(@index_table, {apex, table})
+
+    # Record a journal entry. Failures (no SOA, no advance, no
+    # previous zone) are silently ignored — they're normal during
+    # initial load and shouldn't block the put.
+    if previous_records != [] do
+      _ = ExDns.Zone.Journal.record(apex, previous_records, records)
+    end
+
     :ok
   end
 

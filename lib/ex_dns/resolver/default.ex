@@ -98,6 +98,14 @@ defmodule ExDns.Resolver.Default do
   # rather than chase forever.
   @max_cname_depth 8
 
+  # CHAOS-class metadata queries (RFC 4892 + de-facto BIND convention).
+  # `version.bind`, `hostname.bind`, `id.server`, and `version.server`
+  # in class CH are answered from configured server identity strings;
+  # all other CHAOS queries return REFUSED.
+  defp answer_query(message, %Question{class: :ch} = question) do
+    answer_chaos_query(message, question)
+  end
+
   defp answer_query(message, %Question{host: qname, type: qtype} = question) do
     # Check for an NS delegation cut at or above qname before doing
     # normal resolution. If qname is below a cut we are not the
@@ -112,38 +120,172 @@ defmodule ExDns.Resolver.Default do
     end
   end
 
-  # IXFR (RFC 1995) — we do not maintain a journal of changes, so we
-  # always fall back to a full AXFR per RFC 1995 §2 ("If the server
-  # cannot provide an incremental zone transfer, it should respond with
-  # the full zone").
-  defp answer_query_authoritative(message, %Question{type: :ixfr} = question) do
-    answer_query_authoritative(message, %{question | type: :axfr})
+  # Recognised CHAOS metadata names. We accept the leading-dot variant
+  # too because some clients normalise trailing dots inconsistently.
+  @chaos_metadata %{
+    "version.bind" => :version,
+    "version.server" => :version,
+    "hostname.bind" => :hostname,
+    "id.server" => :hostname
+  }
+
+  defp answer_chaos_query(message, %Question{host: qname, type: qtype}) do
+    normalised = qname |> String.downcase(:ascii) |> String.trim_trailing(".")
+
+    cond do
+      qtype not in [:txt, :any] ->
+        # CHAOS class is only defined for TXT in our deployment.
+        set_response(message, [], rcode: 4, aa: 0, authority: [])
+
+      Map.has_key?(@chaos_metadata, normalised) ->
+        case chaos_value(Map.fetch!(@chaos_metadata, normalised)) do
+          nil ->
+            set_response(message, [], rcode: 5, aa: 1, authority: [])
+
+          value ->
+            answer = [
+              %ExDns.Resource.TXT{
+                name: normalised,
+                ttl: 0,
+                class: :ch,
+                strings: [value]
+              }
+            ]
+
+            set_response(message, answer, rcode: 0, aa: 1, authority: [])
+        end
+
+      true ->
+        set_response(message, [], rcode: 5, aa: 0, authority: [])
+    end
+  end
+
+  # Resolves the configured value for a CHAOS metadata kind. Operators
+  # set them under `:ex_dns, :server_identity, [version: ..., hostname: ...]`.
+  # When `:hostname` is unset we fall back to the BEAM node's
+  # `:inet.gethostname/0` so the server returns *something* useful out
+  # of the box. `:version` defaults to the project version reported in
+  # `:application.get_key/2`.
+  defp chaos_value(:version) do
+    config = Application.get_env(:ex_dns, :server_identity, [])
+
+    case Keyword.get(config, :version) do
+      nil ->
+        case :application.get_key(:ex_dns, :vsn) do
+          {:ok, vsn} -> "ExDns #{List.to_string(vsn)}"
+          _ -> "ExDns"
+        end
+
+      vsn when is_binary(vsn) ->
+        vsn
+    end
+  end
+
+  defp chaos_value(:hostname) do
+    config = Application.get_env(:ex_dns, :server_identity, [])
+
+    case Keyword.get(config, :hostname) do
+      nil ->
+        case :inet.gethostname() do
+          {:ok, host} -> List.to_string(host)
+          _ -> nil
+        end
+
+      host when is_binary(host) ->
+        host
+    end
+  end
+
+  # IXFR (RFC 1995) — incremental zone transfer.
+  #
+  # The client puts its current SOA in the query's authority section.
+  # We compute the chain of journal entries since that serial and
+  # emit the differences-sequence form per RFC 1995 §4. When we
+  # cannot build a chain (no journal entries, serial too old, no
+  # SOA in the request) we fall back to a full AXFR per RFC 1995
+  # §2 ("If the server cannot provide an incremental zone transfer,
+  # it should respond with the full zone").
+  defp answer_query_authoritative(message, %Question{host: qname, type: :ixfr} = question) do
+    qname = String.downcase(qname, :ascii) |> String.trim_trailing(".")
+
+    case ixfr_client_serial(message) do
+      {:ok, client_serial} ->
+        case build_ixfr_chain(qname, client_serial) do
+          {:ok, :up_to_date, current_soa} ->
+            # RFC 1995 §2: if the client is already current, return a
+            # single SOA so it knows no AXFR is needed.
+            set_response(message, [normalize_class(current_soa)],
+              rcode: 0,
+              aa: 1,
+              authority: []
+            )
+
+          {:ok, :ixfr, answer_records} ->
+            set_response(message, Enum.map(answer_records, &normalize_class/1),
+              rcode: 0,
+              aa: 1,
+              authority: []
+            )
+
+          {:error, _reason} ->
+            # Fall through to AXFR.
+            answer_query_authoritative(message, %{question | type: :axfr})
+        end
+
+      {:error, _} ->
+        # No SOA in authority section — fall back to AXFR.
+        answer_query_authoritative(message, %{question | type: :axfr})
+    end
   end
 
   defp answer_query_authoritative(message, %Question{host: qname, type: :axfr}) do
     qname = String.downcase(qname, :ascii) |> String.trim_trailing(".")
+    start_time = System.monotonic_time()
 
-    case Storage.find_zone(qname) do
-      ^qname ->
-        case Storage.dump_zone(qname) do
-          {:ok, [%ExDns.Resource.SOA{} = soa | _] = records} ->
-            # RFC 5936 §2.2: AXFR response is SOA, all RRs, SOA.
-            answer = Enum.map(records ++ [soa], &normalize_class/1)
-            set_response(message, answer, rcode: 0, aa: 1, authority: [])
+    :telemetry.execute(
+      [:ex_dns, :axfr, :transfer, :start],
+      %{system_time: System.system_time()},
+      %{zone: qname, peer: nil, kind: :axfr}
+    )
 
-          {:ok, _} ->
-            # Zone exists but has no SOA — refuse.
-            set_response(message, [], rcode: 5, aa: 0, authority: [])
+    {response, axfr_result, record_count} =
+      case Storage.find_zone(qname) do
+        ^qname ->
+          case Storage.dump_zone(qname) do
+            {:ok, [%ExDns.Resource.SOA{} = soa | _] = records} ->
+              # RFC 5936 §2.2: AXFR response is SOA, all RRs, SOA.
+              answer = Enum.map(records ++ [soa], &normalize_class/1)
+              {set_response(message, answer, rcode: 0, aa: 1, authority: []), :ok,
+               length(answer)}
 
-          {:error, :not_loaded} ->
-            set_response(message, [], rcode: 5, aa: 0, authority: [])
-        end
+            {:ok, _} ->
+              # Zone exists but has no SOA — refuse.
+              {set_response(message, [], rcode: 5, aa: 0, authority: []),
+               {:error, :no_soa}, 0}
 
-      _ ->
-        # AXFR can only be served for a zone we are authoritative for at
-        # the apex; otherwise REFUSED.
-        set_response(message, [], rcode: 5, aa: 0, authority: [])
-    end
+            {:error, :not_loaded} ->
+              {set_response(message, [], rcode: 5, aa: 0, authority: []),
+               {:error, :not_loaded}, 0}
+          end
+
+        _ ->
+          # AXFR can only be served for a zone we are authoritative for at
+          # the apex; otherwise REFUSED.
+          {set_response(message, [], rcode: 5, aa: 0, authority: []),
+           {:error, :not_authoritative}, 0}
+      end
+
+    :telemetry.execute(
+      [:ex_dns, :axfr, :transfer, :stop],
+      %{
+        duration: System.monotonic_time() - start_time,
+        records: record_count,
+        bytes: 0
+      },
+      %{zone: qname, peer: nil, kind: :axfr, result: axfr_result}
+    )
+
+    response
   end
 
   defp answer_query_authoritative(message, %Question{host: qname, type: :any}) do
@@ -509,5 +651,72 @@ defmodule ExDns.Resolver.Default do
       :internet -> %{record | class: :in}
       _ -> record
     end
+  end
+
+  # ----- IXFR helpers (RFC 1995) ------------------------------------
+
+  # The IXFR query carries the client's current SOA in the authority
+  # section (RFC 1995 §3).
+  defp ixfr_client_serial(%Message{authority: authority}) when is_list(authority) do
+    case Enum.find(authority, &match?(%ExDns.Resource.SOA{}, &1)) do
+      %ExDns.Resource.SOA{serial: serial} when is_integer(serial) -> {:ok, serial}
+      _ -> {:error, :no_client_soa}
+    end
+  end
+
+  defp ixfr_client_serial(_), do: {:error, :no_client_soa}
+
+  # Build the IXFR answer-section record list from journal entries.
+  # Returns one of:
+  #
+  #   {:ok, :up_to_date, current_soa}
+  #   {:ok, :ixfr, answer_records}
+  #   {:error, reason}
+  defp build_ixfr_chain(qname, client_serial) do
+    with ^qname <- Storage.find_zone(qname),
+         {:ok, current_records} <- Storage.dump_zone(qname),
+         %ExDns.Resource.SOA{serial: current_serial} = current_soa <-
+           Enum.find(current_records, &match?(%ExDns.Resource.SOA{}, &1)) do
+      cond do
+        client_serial == current_serial ->
+          {:ok, :up_to_date, current_soa}
+
+        true ->
+          entries = ExDns.Zone.Journal.since(qname, client_serial)
+          assemble_ixfr(entries, client_serial, current_serial, current_soa)
+      end
+    else
+      _ -> {:error, :not_authoritative}
+    end
+  end
+
+  defp assemble_ixfr([], _client_serial, _current_serial, _current_soa) do
+    {:error, :no_journal}
+  end
+
+  defp assemble_ixfr(entries, client_serial, current_serial, current_soa) do
+    chain = Enum.sort_by(entries, & &1.to_serial)
+
+    cond do
+      hd(chain).from_serial != client_serial ->
+        {:error, :stale_client}
+
+      List.last(chain).to_serial != current_serial ->
+        {:error, :journal_behind}
+
+      true ->
+        deltas =
+          Enum.flat_map(chain, fn entry ->
+            old_soa = soa_with_serial(current_soa, entry.from_serial)
+            new_soa = soa_with_serial(current_soa, entry.to_serial)
+            [old_soa | entry.removed] ++ [new_soa | entry.added]
+          end)
+
+        {:ok, :ixfr, [current_soa | deltas] ++ [current_soa]}
+    end
+  end
+
+  defp soa_with_serial(%ExDns.Resource.SOA{} = soa, serial) do
+    %{soa | serial: serial}
   end
 end

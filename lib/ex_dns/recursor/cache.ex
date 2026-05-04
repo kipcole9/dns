@@ -77,18 +77,37 @@ defmodule ExDns.Recursor.Cache do
     init()
     key = {normalize(name), type}
 
-    case :ets.lookup(@table, key) do
-      [{^key, records, expires_at}] ->
-        if expires_at > now() do
-          {:hit, records}
-        else
-          :ets.delete(@table, key)
-          :miss
-        end
+    result =
+      case :ets.lookup(@table, key) do
+        [{^key, records, expires_at}] ->
+          if expires_at > now() do
+            {:hit, records}
+          else
+            :ets.delete(@table, key)
+            :miss
+          end
 
-      [] ->
-        :miss
+        [] ->
+          :miss
+      end
+
+    case result do
+      {:hit, _} ->
+        :telemetry.execute(
+          [:ex_dns, :cache, :hit],
+          %{count: 1},
+          %{layer: :recursor, qname: name, qtype: type}
+        )
+
+      :miss ->
+        :telemetry.execute(
+          [:ex_dns, :cache, :miss],
+          %{count: 1},
+          %{layer: :recursor, qname: name, qtype: type}
+        )
     end
+
+    result
   end
 
   @doc "Removes every entry from the cache. Used by tests."

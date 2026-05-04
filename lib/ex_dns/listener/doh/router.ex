@@ -73,8 +73,23 @@ defmodule ExDns.Listener.DoH.Router do
             transport: :doh
           )
 
+        start_metadata = query_metadata(query, conn.remote_ip)
+        start_time = System.monotonic_time()
+
+        :telemetry.execute(
+          [:ex_dns, :query, :start],
+          %{system_time: System.system_time()},
+          start_metadata
+        )
+
         response = ExDns.resolver_module().resolve(request)
         response_bytes = Message.encode(response)
+
+        :telemetry.execute(
+          [:ex_dns, :query, :stop],
+          %{duration: System.monotonic_time() - start_time},
+          Map.merge(start_metadata, response_metadata(response))
+        )
 
         conn
         |> put_resp_content_type(@content_type)
@@ -83,5 +98,21 @@ defmodule ExDns.Listener.DoH.Router do
       {:error, _} ->
         send_resp(conn, 400, "could not decode DNS message")
     end
+  end
+
+  defp query_metadata(%Message{question: %{host: host, type: type}}, remote_ip) do
+    %{transport: :doh, qname: host, qtype: type, client: {remote_ip, nil}}
+  end
+
+  defp query_metadata(_, remote_ip) do
+    %{transport: :doh, qname: nil, qtype: nil, client: {remote_ip, nil}}
+  end
+
+  defp response_metadata(%Message{header: %{rc: rcode, anc: anc}}) do
+    %{rcode: rcode, answer_count: anc, validation: :none, cache: :none}
+  end
+
+  defp response_metadata(_) do
+    %{rcode: nil, answer_count: 0, validation: :none, cache: :none}
   end
 end

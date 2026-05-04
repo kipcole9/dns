@@ -53,7 +53,11 @@ defmodule ExDns.TSIG.Wire do
        when is_list(additional) do
     case List.last(additional) do
       %TSIGRR{} = tsig ->
-        case TSIGModule.verify(wire_bytes) do
+        start_time = System.monotonic_time()
+        verify_result = TSIGModule.verify(wire_bytes)
+        emit_tsig_verify(verify_result, tsig, start_time)
+
+        case verify_result do
           {:ok, _verified, key_name} ->
             {:ok, message, %{key_name: key_name, request_mac: tsig.mac}}
 
@@ -71,6 +75,21 @@ defmodule ExDns.TSIG.Wire do
 
   defp verify_decoded(message, _wire_bytes) do
     {:ok, message, nil}
+  end
+
+  defp emit_tsig_verify(verify_result, %TSIGRR{name: key_name}, start_time) do
+    result =
+      case verify_result do
+        {:ok, _, _} -> :ok
+        {:error, reason} -> reason
+        {:error, reason, _} -> reason
+      end
+
+    :telemetry.execute(
+      [:ex_dns, :tsig, :verify, :stop],
+      %{duration: System.monotonic_time() - start_time},
+      %{key_name: key_name, result: result}
+    )
   end
 
   @doc """

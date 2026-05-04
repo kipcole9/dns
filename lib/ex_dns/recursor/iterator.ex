@@ -88,7 +88,15 @@ defmodule ExDns.Recursor.Iterator do
   def resolve_validated(qname, qtype, options \\ []) do
     with {:ok, records} <- resolve(qname, qtype, options) do
       {answer, rrsigs} = split_rrsigs(records)
+      start_time = System.monotonic_time()
       status = classify(answer, rrsigs, qtype, options)
+
+      :telemetry.execute(
+        [:ex_dns, :dnssec, :validate, :stop],
+        %{duration: System.monotonic_time() - start_time},
+        %{qname: qname, qtype: qtype, status: status}
+      )
+
       {:ok, answer, status}
     end
   end

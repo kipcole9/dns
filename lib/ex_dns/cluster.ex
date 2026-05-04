@@ -238,6 +238,13 @@ defmodule ExDns.Cluster do
     case :global.register_name(@global_name, self()) do
       :yes ->
         Logger.info("ExDns.Cluster: this node (#{inspect(node())}) is now the update master")
+
+        :telemetry.execute(
+          [:ex_dns, :cluster, :master, :elected],
+          %{count: 1},
+          %{zone: "*"}
+        )
+
         state
 
       :no ->

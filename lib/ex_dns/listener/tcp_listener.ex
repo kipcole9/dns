@@ -78,7 +78,22 @@ defmodule ExDns.Listener.TCP do
                 transport: :tcp
               )
 
+            start_metadata = query_metadata(query, source_ip, source_port)
+            start_time = System.monotonic_time()
+
+            :telemetry.execute(
+              [:ex_dns, :query, :start],
+              %{system_time: System.system_time()},
+              start_metadata
+            )
+
             response = ExDns.resolver_module().resolve(request)
+
+            :telemetry.execute(
+              [:ex_dns, :query, :stop],
+              %{duration: System.monotonic_time() - start_time},
+              Map.merge(start_metadata, response_metadata(response))
+            )
 
             case ExDns.TSIG.Wire.sign_outbound(response, tsig_context) do
               {:ok, response_bytes} ->
@@ -121,6 +136,22 @@ defmodule ExDns.Listener.TCP do
         {:ok, {ip, port}} -> {ip, port}
         _ -> {nil, nil}
       end
+    end
+
+    defp query_metadata(%ExDns.Message{question: %{host: host, type: type}}, ip, port) do
+      %{transport: :tcp, qname: host, qtype: type, client: {ip, port}}
+    end
+
+    defp query_metadata(_, ip, port) do
+      %{transport: :tcp, qname: nil, qtype: nil, client: {ip, port}}
+    end
+
+    defp response_metadata(%ExDns.Message{header: %{rc: rcode, anc: anc}}) do
+      %{rcode: rcode, answer_count: anc, validation: :none, cache: :none}
+    end
+
+    defp response_metadata(_) do
+      %{rcode: nil, answer_count: 0, validation: :none, cache: :none}
     end
   end
 end
