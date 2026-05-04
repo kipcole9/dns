@@ -99,50 +99,127 @@ defmodule ExDns.Recursor.Iterator do
 
   defp classify(_answer, [], _qtype, _options), do: :insecure
 
-  defp classify(answer, [first_rrsig | _], _qtype, options) do
-    deadline = monotonic_ms() + Keyword.get(options, :max_time_ms, @max_time_ms)
-
-    case fetch_dnskey(first_rrsig.signer, deadline) do
-      {:ok, dnskeys} ->
-        case Enum.find(dnskeys, fn k ->
-               ExDns.DNSSEC.Validator.key_tag(k) == first_rrsig.key_tag and
-                 k.algorithm == first_rrsig.algorithm
-             end) do
-          nil ->
-            :bogus
-
-          dnskey ->
-            case ExDns.DNSSEC.Validator.verify_rrset(answer, first_rrsig, dnskey) do
-              :ok -> :secure
-              {:error, _} -> :bogus
-            end
+  defp classify(answer, [first_rrsig | _], _qtype, _options) do
+    case fetch_chain(first_rrsig.signer) do
+      {:ok, chain} ->
+        case ExDns.DNSSEC.validate_chain(answer, first_rrsig, chain) do
+          {:secure, _} -> :secure
+          {:bogus, _} -> :bogus
+          {:indeterminate, _} -> :indeterminate
         end
 
-      _ ->
+      {:error, _} ->
         :indeterminate
     end
   end
 
-  defp fetch_dnskey(signer, deadline) do
-    max_depth = @max_depth
+  @doc """
+  Builds a full DNSSEC chain from the IANA root down to `signer`,
+  ready to feed into `ExDns.DNSSEC.validate_chain/3`.
 
-    case resolve(signer, :dnskey, max_time_ms: max(deadline - monotonic_ms(), 100)) do
-      {:ok, records} ->
-        dnskeys = Enum.filter(records, &match?(%ExDns.Resource.DNSKEY{}, &1))
+  For each zone in the path, fetches:
 
-        case dnskeys do
-          [] -> :error
-          _ -> {:ok, dnskeys}
-        end
+  * the zone's DNSKEY RRset (and the RRSIG covering it, signed by
+    the zone's KSK);
+  * the parent's DS RRset for this zone (and the RRSIG covering it,
+    signed by the parent's ZSK), except for the root, which uses the
+    IANA trust anchor.
 
-      _ ->
-        :error
+  ### Returns
+
+  * `{:ok, chain}` — list of `chain_link/0` entries, root-first.
+  * `{:error, {:missing, qname, qtype}}` — required record could
+    not be resolved.
+
+  """
+  @spec fetch_chain(binary()) ::
+          {:ok, [ExDns.DNSSEC.chain_link()]}
+          | {:error, {:missing, binary(), atom()}}
+  def fetch_chain(signer) when is_binary(signer) do
+    zones = ancestor_zones(signer)
+
+    Enum.reduce_while(zones, {:ok, []}, fn zone, {:ok, acc} ->
+      case fetch_link(zone) do
+        {:ok, link} -> {:cont, {:ok, acc ++ [link]}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp ancestor_zones(name) do
+    name
+    |> normalize_name()
+    |> String.split(".", trim: true)
+    |> labels_to_zones()
+  end
+
+  defp normalize_name(name) do
+    name |> String.trim_trailing(".") |> String.downcase(:ascii)
+  end
+
+  defp labels_to_zones(labels) do
+    # ["example", "com"] → ["", "com", "example.com"]
+    Enum.reduce(Enum.reverse(labels), [""], fn label, [head | _] = acc ->
+      next = if head == "", do: label, else: "#{label}.#{head}"
+      [next | acc]
+    end)
+    |> Enum.reverse()
+  end
+
+  defp fetch_link("" = zone) do
+    with {:ok, dnskeys, dnskey_rrsig} <- fetch_dnskey_rrset(zone) do
+      {:ok,
+       %{
+         zone: zone,
+         dnskeys: dnskeys,
+         dnskey_rrsig: dnskey_rrsig,
+         parent_ds: :root_anchor,
+         parent_ds_rrsig: :root_anchor
+       }}
     end
-    |> case do
-      {:ok, _} = ok -> ok
-      _ -> :error
+  end
+
+  defp fetch_link(zone) do
+    with {:ok, dnskeys, dnskey_rrsig} <- fetch_dnskey_rrset(zone),
+         {:ok, ds_records, ds_rrsig} <- fetch_ds_rrset(zone) do
+      {:ok,
+       %{
+         zone: zone,
+         dnskeys: dnskeys,
+         dnskey_rrsig: dnskey_rrsig,
+         parent_ds: ds_records,
+         parent_ds_rrsig: ds_rrsig
+       }}
     end
-    |> tap(fn _ -> _ = max_depth end)
+  end
+
+  defp fetch_dnskey_rrset(zone) do
+    case resolve(zone, :dnskey) do
+      {:ok, records} -> split_rrset_with_rrsig(records, ExDns.Resource.DNSKEY, zone, :dnskey)
+      _ -> {:error, {:missing, zone, :dnskey}}
+    end
+  end
+
+  defp fetch_ds_rrset(zone) do
+    case resolve(zone, :ds) do
+      {:ok, records} -> split_rrset_with_rrsig(records, ExDns.Resource.DS, zone, :ds)
+      _ -> {:error, {:missing, zone, :ds}}
+    end
+  end
+
+  defp split_rrset_with_rrsig(records, struct_module, qname, qtype) do
+    rrset = Enum.filter(records, &(&1.__struct__ == struct_module))
+
+    rrsig =
+      Enum.find(records, fn r ->
+        match?(%ExDns.Resource.RRSIG{}, r) and r.type_covered == qtype
+      end)
+
+    cond do
+      rrset == [] -> {:error, {:missing, qname, qtype}}
+      is_nil(rrsig) -> {:error, {:missing, qname, :rrsig}}
+      true -> {:ok, rrset, rrsig}
+    end
   end
 
   defp iterate(_qname, _qtype, 0, _deadline, _trace), do: {:error, :max_depth}

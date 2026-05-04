@@ -30,14 +30,24 @@ defmodule ExDns.DNSSEC do
   alias ExDns.Resource.{DNSKEY, DS, RRSIG}
 
   @typedoc """
-  A node in the validation chain — a zone's DNSKEY RRset, its RRSIG,
-  and the parent's DS RRset that anchors it.
+  A node in the validation chain. For each zone we need:
+
+  * `:dnskeys` — the zone's DNSKEY RRset.
+  * `:dnskey_rrsig` — RRSIG over that DNSKEY RRset, signed by one of
+    the zone's own keys (self-signature).
+  * `:parent_ds` — the DS RRset for this zone, sitting in the parent
+    zone, OR `:root_anchor` for the root.
+  * `:parent_ds_rrsig` — RRSIG over the parent's DS RRset, signed by
+    the parent's ZSK. `:root_anchor` for the root link (the DS is
+    the IANA trust anchor and isn't signed in DNS itself).
+
   """
   @type chain_link :: %{
-          zone: binary(),
-          dnskeys: [DNSKEY.t()],
-          dnskey_rrsig: RRSIG.t(),
-          parent_ds: [DS.t()] | :root_anchor
+          required(:zone) => binary(),
+          required(:dnskeys) => [DNSKEY.t()],
+          required(:dnskey_rrsig) => RRSIG.t(),
+          required(:parent_ds) => [DS.t()] | :root_anchor,
+          optional(:parent_ds_rrsig) => RRSIG.t() | :root_anchor
         }
 
   @typedoc "Result of a chain validation attempt."
@@ -103,26 +113,49 @@ defmodule ExDns.DNSSEC do
   defp verify_remaining_links([_root]), do: :ok
 
   defp verify_remaining_links([parent, current | rest]) do
-    case verify_dnskey_against_any_ds(current.dnskeys, current.zone, current.parent_ds) do
-      :ok ->
-        # Each link must also self-sign its DNSKEY RRset with one of
-        # the keys in that same RRset.
-        case find_signing_key(current.dnskey_rrsig, current) do
-          {:ok, key} ->
-            case Validator.verify_rrset(current.dnskeys, current.dnskey_rrsig, key) do
-              :ok -> verify_remaining_links([current | rest])
-              {:error, reason} -> {:bogus, {current.zone, :dnskey_self_sig, reason}}
-            end
+    with :ok <- verify_dnskey_against_any_ds(current.dnskeys, current.zone, current.parent_ds),
+         :ok <- verify_ds_rrsig(current, parent),
+         {:ok, self_sign_key} <- find_signing_key(current.dnskey_rrsig, current),
+         :ok <- Validator.verify_rrset(current.dnskeys, current.dnskey_rrsig, self_sign_key) do
+      verify_remaining_links([current | rest])
+    else
+      {:error, :no_ds_matches} ->
+        {:bogus, {current.zone, :ds_mismatch}}
 
-          {:indeterminate, reason} ->
-            {:indeterminate, {current.zone, reason}}
-        end
+      {:error, :ds_rrsig_unverified} = err ->
+        {:bogus, {current.zone, elem(err, 1)}}
+
+      {:indeterminate, reason} ->
+        {:indeterminate, {current.zone, reason}}
 
       {:error, reason} ->
-        {:bogus, {current.zone, :ds_mismatch, reason}}
+        {:bogus, {current.zone, :dnskey_self_sig, reason}}
     end
-    |> tap(fn _ -> _ = parent end)
   end
+
+  # Verifies the parent's DS RRset signature using one of the parent's
+  # DNSKEYs. When `parent_ds_rrsig` is omitted from the chain link the
+  # caller has accepted the DS records as trusted out-of-band; we
+  # accept that to remain backwards-compatible with the simpler
+  # one-level fixtures, but the iterator-driven chain always supplies
+  # both.
+  defp verify_ds_rrsig(%{parent_ds_rrsig: :root_anchor}, _parent), do: :ok
+
+  defp verify_ds_rrsig(%{parent_ds_rrsig: %RRSIG{} = ds_rrsig, parent_ds: ds}, parent)
+       when is_list(ds) do
+    case find_signing_key(ds_rrsig, parent) do
+      {:ok, key} ->
+        case Validator.verify_rrset(ds, ds_rrsig, key) do
+          :ok -> :ok
+          {:error, _} -> {:error, :ds_rrsig_unverified}
+        end
+
+      {:indeterminate, reason} ->
+        {:indeterminate, reason}
+    end
+  end
+
+  defp verify_ds_rrsig(_link, _parent), do: :ok
 
   # Tries every (DNSKEY, DS) pair until one verifies; succeeds if any
   # combination matches.

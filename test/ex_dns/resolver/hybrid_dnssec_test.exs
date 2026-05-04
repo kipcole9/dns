@@ -84,7 +84,10 @@ defmodule ExDns.Resolver.HybridDNSSECTest do
     }
   end
 
-  test "AD=1 when DO=1 and the recursive answer has a verifying RRSIG" do
+  test "AD=0 when only the leaf is signed (full chain to root not in cache → indeterminate)" do
+    # With full-chain validation in place, "leaf-DNSKEY in cache but
+    # no DS chain to the IANA root" yields :indeterminate, not :secure.
+    # The Hybrid resolver only sets AD=1 on a fully-secure chain.
     {dnskey, private} = make_keypair("secure-recurse.test")
     records = [%A{name: "x.secure-recurse.test", ttl: 60, class: :in, ipv4: {1, 2, 3, 4}}]
     {:ok, rrsig} = Signer.sign_rrset(records, dnskey, private, signer: "secure-recurse.test")
@@ -94,7 +97,7 @@ defmodule ExDns.Resolver.HybridDNSSECTest do
 
     response = Hybrid.resolve(query("x.secure-recurse.test", :a, true))
 
-    assert response.header.ad == 1
+    assert response.header.ad == 0
     assert response.header.ra == 1
     assert [%A{ipv4: {1, 2, 3, 4}}] = response.answer
   end

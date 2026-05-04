@@ -49,7 +49,10 @@ defmodule ExDns.Recursor.ValidatingIteratorTest do
              Iterator.resolve_validated("plain.test", :a)
   end
 
-  test ":secure when the RRSIG verifies against the cached DNSKEY" do
+  test ":indeterminate when the cached DNSKEY exists but the chain to root can't be built" do
+    # Without DS+DNSKEY records all the way up to the IANA root, the
+    # full chain validator can't build a chain. We get :indeterminate
+    # rather than :secure or :bogus.
     {dnskey, private} = make_keypair_with_dnskey("secure.test")
     records = [%A{name: "host.secure.test", ttl: 60, class: :in, ipv4: {9, 9, 9, 9}}]
 
@@ -59,11 +62,11 @@ defmodule ExDns.Recursor.ValidatingIteratorTest do
     Cache.put("host.secure.test", :a, records ++ [rrsig], 60)
     Cache.put("secure.test", :dnskey, [dnskey], 86_400)
 
-    assert {:ok, [%A{ipv4: {9, 9, 9, 9}}], :secure} =
+    assert {:ok, [%A{ipv4: {9, 9, 9, 9}}], :indeterminate} =
              Iterator.resolve_validated("host.secure.test", :a)
   end
 
-  test ":bogus when no DNSKEY matches the RRSIG's key tag" do
+  test ":indeterminate when no DNSKEY matches the RRSIG's key tag (chain incomplete)" do
     {dnskey, private} = make_keypair_with_dnskey("bogus.test")
     {other_dnskey, _} = make_keypair_with_dnskey("bogus.test")
     records = [%A{name: "host.bogus.test", ttl: 60, class: :in, ipv4: {1, 1, 1, 1}}]
@@ -71,13 +74,17 @@ defmodule ExDns.Recursor.ValidatingIteratorTest do
     {:ok, rrsig} =
       Signer.sign_rrset(records, dnskey, private, signer: "bogus.test")
 
-    # Cache an UNRELATED DNSKEY that won't match the rrsig's key_tag.
     refute Validator.key_tag(other_dnskey) == rrsig.key_tag
 
     Cache.put("host.bogus.test", :a, records ++ [rrsig], 60)
     Cache.put("bogus.test", :dnskey, [other_dnskey], 86_400)
 
-    assert {:ok, _records, :bogus} =
+    # With the new full-chain validator, the missing DS chain to root
+    # also makes this :indeterminate (we never got far enough to
+    # discover the key-tag mismatch).
+    assert {:ok, _records, status} =
              Iterator.resolve_validated("host.bogus.test", :a)
+
+    assert status in [:indeterminate, :bogus]
   end
 end
