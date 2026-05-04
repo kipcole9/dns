@@ -1,4 +1,6 @@
 defmodule ExDns.Message.RR do
+  import Bitwise
+
   @moduledoc """
   Shared decode and encode for resource records as they appear in the
   Answer, Authority, and Additional sections of a DNS message.
@@ -96,26 +98,39 @@ defmodule ExDns.Message.RR do
   end
 
   defp decode_record_body(type_int, name, class_int, ttl, rdlength, rdata, message) do
+    {class, cache_flush} = decode_class_with_cache_flush(class_int)
     type = Resource.decode_type(type_int)
-    class = Resource.decode_class(class_int)
 
-    case Resource.module_for(type) do
-      nil ->
-        %Resource{
-          name: name,
-          type: type,
-          class: class,
-          ttl: ttl,
-          rdlength: rdlength,
-          rdata: rdata
-        }
+    base =
+      case Resource.module_for(type) do
+        nil ->
+          %Resource{
+            name: name,
+            type: type,
+            class: class,
+            ttl: ttl,
+            rdlength: rdlength,
+            rdata: rdata
+          }
 
-      module ->
-        module.decode(rdata, message)
-        |> Map.put(:name, name)
-        |> Map.put(:class, class)
-        |> Map.put(:ttl, ttl)
-    end
+        module ->
+          module.decode(rdata, message)
+          |> Map.put(:name, name)
+          |> Map.put(:class, class)
+          |> Map.put(:ttl, ttl)
+      end
+
+    # Only annotate when the bit was actually set on the wire so the
+    # default record shape stays identical to the unicast DNS path.
+    if cache_flush, do: Map.put(base, :cache_flush, true), else: base
+  end
+
+  # The cache-flush bit (RFC 6762 §10.2) is the top bit of the 16-bit
+  # CLASS in answer/authority records. Strip it for normal class
+  # decoding and surface the bit alongside.
+  defp decode_class_with_cache_flush(class_int) when is_integer(class_int) do
+    <<flush::size(1), class::size(15)>> = <<class_int::size(16)>>
+    {Resource.decode_class(class), flush == 1}
   end
 
   @doc """
@@ -169,10 +184,11 @@ defmodule ExDns.Message.RR do
     %Resource{name: name, type: type, class: class, ttl: ttl, rdata: rdata} = record
     {name_bytes, offsets} = Message.encode_name(name, offset, offsets)
     rdlength = byte_size(rdata)
+    class_field = encode_class_with_cache_flush(class, record)
 
     bytes =
-      <<name_bytes::binary, Resource.type_from(type)::size(16),
-        Resource.class_for(class)::size(16), ttl::size(32), rdlength::size(16), rdata::binary>>
+      <<name_bytes::binary, Resource.type_from(type)::size(16), class_field::size(16),
+        ttl::size(32), rdlength::size(16), rdata::binary>>
 
     {bytes, offsets}
   end
@@ -190,13 +206,25 @@ defmodule ExDns.Message.RR do
         {name_bytes, offsets} = Message.encode_name(record.name, offset, offsets)
         rdata = IO.iodata_to_binary(module.encode(record))
         rdlength = byte_size(rdata)
+        class_field = encode_class_with_cache_flush(record.class, record)
 
         bytes =
-          <<name_bytes::binary, Resource.type_from(type)::size(16),
-            Resource.class_for(record.class)::size(16), record.ttl::size(32), rdlength::size(16),
-            rdata::binary>>
+          <<name_bytes::binary, Resource.type_from(type)::size(16), class_field::size(16),
+            record.ttl::size(32), rdlength::size(16), rdata::binary>>
 
         {bytes, offsets}
+    end
+  end
+
+  # Honour the cache-flush flag (mDNS RFC 6762 §10.2): top bit of the
+  # 16-bit CLASS field signals "I am the authoritative source for this
+  # rrset; flush any cached copies before adopting this".
+  defp encode_class_with_cache_flush(class, record) do
+    base = Resource.class_for(class)
+
+    case Map.get(record, :cache_flush, false) do
+      true -> base ||| 0x8000
+      _ -> base
     end
   end
 
@@ -212,9 +240,10 @@ defmodule ExDns.Message.RR do
   def encode_one(%Resource{} = record) do
     %Resource{name: name, type: type, class: class, ttl: ttl, rdata: rdata} = record
     rdlength = byte_size(rdata)
+    class_field = encode_class_with_cache_flush(class, record)
 
     <<Message.encode_name(name)::binary, Resource.type_from(type)::size(16),
-      Resource.class_for(class)::size(16), ttl::size(32), rdlength::size(16), rdata::binary>>
+      class_field::size(16), ttl::size(32), rdlength::size(16), rdata::binary>>
   end
 
   def encode_one(record) when is_struct(record) do
@@ -230,10 +259,10 @@ defmodule ExDns.Message.RR do
       module ->
         rdata = IO.iodata_to_binary(module.encode(record))
         rdlength = byte_size(rdata)
+        class_field = encode_class_with_cache_flush(record.class, record)
 
         <<Message.encode_name(record.name)::binary, Resource.type_from(type)::size(16),
-          Resource.class_for(record.class)::size(16), record.ttl::size(32), rdlength::size(16),
-          rdata::binary>>
+          class_field::size(16), record.ttl::size(32), rdlength::size(16), rdata::binary>>
     end
   end
 

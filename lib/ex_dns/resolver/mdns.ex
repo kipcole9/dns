@@ -81,7 +81,13 @@ defmodule ExDns.Resolver.MDNS do
   defp local_name?(_), do: false
 
   defp build_response(%Message{header: %Header{} = original_header} = query, question, records) do
-    records = Enum.map(records, &normalize_class/1)
+    # We are the authoritative source for these records — set the
+    # cache-flush bit (RFC 6762 §10.2) on every answer so receivers
+    # drop any stale cached copies before adopting ours.
+    records =
+      records
+      |> Enum.map(&normalize_class/1)
+      |> Enum.map(&Map.put(&1, :cache_flush, true))
 
     new_header = %Header{
       original_header

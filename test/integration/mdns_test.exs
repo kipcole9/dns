@@ -145,6 +145,46 @@ defmodule ExDns.Integration.MDNSTest do
     end
   end
 
+  describe "DNS-SD service discovery" do
+    test "registered service appears via PTR query, with SRV+TXT lookup" do
+      ExDns.MDNS.Services.register(
+        instance: "TestSvc",
+        service: "_test._tcp",
+        port: 1234,
+        target: "testsvc.local",
+        address: {127, 0, 0, 1},
+        txt: ["k=v"]
+      )
+
+      ptr_query = build_query("_test._tcp.local", :ptr, true)
+      response = roundtrip_query(ptr_query)
+      assert [%ExDns.Resource.PTR{pointer: "TestSvc._test._tcp.local"}] = response.answer
+
+      srv_query = build_query("TestSvc._test._tcp.local", :srv, true)
+      srv_response = roundtrip_query(srv_query)
+      assert [%ExDns.Resource.SRV{port: 1234, target: "testsvc.local"}] = srv_response.answer
+
+      txt_query = build_query("TestSvc._test._tcp.local", :txt, true)
+      txt_response = roundtrip_query(txt_query)
+      assert [%ExDns.Resource.TXT{strings: ["k=v"]}] = txt_response.answer
+
+      meta_query = build_query("_services._dns-sd._udp.local", :ptr, true)
+      meta_response = roundtrip_query(meta_query)
+      assert [%ExDns.Resource.PTR{pointer: "_test._tcp.local"}] = meta_response.answer
+
+      ExDns.MDNS.Services.unregister("TestSvc", "_test._tcp")
+    end
+  end
+
+  defp roundtrip_query(query_bytes) do
+    {:ok, socket} = :gen_udp.open(0, [:binary, {:active, false}])
+    :ok = :gen_udp.send(socket, {127, 0, 0, 1}, @port, query_bytes)
+    {:ok, {_ip, _port, response_bytes}} = :gen_udp.recv(socket, 0, 1_500)
+    :gen_udp.close(socket)
+    {:ok, response} = Message.decode(response_bytes)
+    response
+  end
+
   describe "decoded question round-trip" do
     test "the response echoes the question with the QU bit stripped" do
       query = build_query("responder.local", :a, true)

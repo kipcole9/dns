@@ -109,7 +109,10 @@ defmodule ExDns.Application do
   end
 
   # mDNS responder is opt-in (`:ex_dns, :mdns, [enabled: true]`) —
-  # binds the multicast socket only when explicitly requested.
+  # binds the multicast socket only when explicitly requested. The
+  # DNS-SD service registry comes along for the ride so apps can
+  # call `ExDns.MDNS.Services.register/1` once the supervision tree
+  # is up.
   defp mdns_children do
     case Application.get_env(:ex_dns, :mdns) do
       nil ->
@@ -117,7 +120,10 @@ defmodule ExDns.Application do
 
       options when is_list(options) ->
         if Keyword.get(options, :enabled, false) do
-          [{ExDns.Listener.MDNS, options}]
+          [
+            ExDns.MDNS.Services,
+            {ExDns.Listener.MDNS, options}
+          ]
         else
           []
         end
