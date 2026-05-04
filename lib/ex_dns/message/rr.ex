@@ -97,6 +97,13 @@ defmodule ExDns.Message.RR do
     ExDns.Resource.OPT.decode_record(class_int, ttl, rdata, message)
   end
 
+  # TSIG pseudo-RR (RFC 8945): owner name is the key name; CLASS is
+  # always ANY (255); TTL is always 0. Decoded directly into a TSIG
+  # struct.
+  defp decode_record_body(250, name, class_int, ttl, _rdlength, rdata, message) do
+    ExDns.Resource.TSIG.decode_record(name, class_int, ttl, rdata, message)
+  end
+
   defp decode_record_body(type_int, name, class_int, ttl, rdlength, rdata, message) do
     {class, cache_flush} = decode_class_with_cache_flush(class_int)
     type = Resource.decode_type(type_int)
@@ -180,6 +187,10 @@ defmodule ExDns.Message.RR do
     {ExDns.Resource.OPT.encode_record(opt), offsets}
   end
 
+  def encode_one(%ExDns.Resource.TSIG{} = tsig, _offset, offsets) do
+    {ExDns.Resource.TSIG.encode_record(tsig), offsets}
+  end
+
   def encode_one(%Resource{} = record, offset, offsets) do
     %Resource{name: name, type: type, class: class, ttl: ttl, rdata: rdata} = record
     {name_bytes, offsets} = Message.encode_name(name, offset, offsets)
@@ -235,6 +246,10 @@ defmodule ExDns.Message.RR do
 
   def encode_one(%ExDns.Resource.OPT{} = opt) do
     ExDns.Resource.OPT.encode_record(opt)
+  end
+
+  def encode_one(%ExDns.Resource.TSIG{} = tsig) do
+    ExDns.Resource.TSIG.encode_record(tsig)
   end
 
   def encode_one(%Resource{} = record) do

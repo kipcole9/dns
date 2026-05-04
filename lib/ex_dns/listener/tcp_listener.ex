@@ -25,8 +25,6 @@ defmodule ExDns.Listener.TCP do
 
   require Logger
 
-  alias ExDns.Message
-
   @doc false
   def child_spec(options) do
     options =
@@ -55,7 +53,6 @@ defmodule ExDns.Listener.TCP do
     use ThousandIsland.Handler
 
     require Logger
-    alias ExDns.Message
 
     # 5 seconds is the upper bound for waiting on the next request
     # frame from a single connection. RFC 7766 recommends an idle
@@ -69,21 +66,43 @@ defmodule ExDns.Listener.TCP do
 
     defp handle_one(socket, state) do
       with {:ok, <<length::size(16)>>} <- ThousandIsland.Socket.recv(socket, 2, @idle_timeout),
-           {:ok, message_bytes} <- ThousandIsland.Socket.recv(socket, length, @idle_timeout),
-           {:ok, query} <- Message.decode(message_bytes) do
+           {:ok, message_bytes} <- ThousandIsland.Socket.recv(socket, length, @idle_timeout) do
         {source_ip, source_port} = peer_info(socket)
 
-        request =
-          ExDns.Request.new(query,
-            source_ip: source_ip,
-            source_port: source_port,
-            transport: :tcp
-          )
+        case ExDns.TSIG.Wire.verify_inbound(message_bytes) do
+          {:ok, query, tsig_context} ->
+            request =
+              ExDns.Request.new(query,
+                source_ip: source_ip,
+                source_port: source_port,
+                transport: :tcp
+              )
 
-        response = ExDns.resolver_module().resolve(request)
-        response_bytes = Message.encode(response)
-        :ok = ThousandIsland.Socket.send(socket, <<byte_size(response_bytes)::size(16), response_bytes::binary>>)
-        handle_one(socket, state)
+            response = ExDns.resolver_module().resolve(request)
+
+            case ExDns.TSIG.Wire.sign_outbound(response, tsig_context) do
+              {:ok, response_bytes} ->
+                :ok =
+                  ThousandIsland.Socket.send(
+                    socket,
+                    <<byte_size(response_bytes)::size(16), response_bytes::binary>>
+                  )
+
+                handle_one(socket, state)
+
+              {:error, reason} ->
+                Logger.error("TCP DNS handler: response signing failed: #{inspect(reason)}")
+                {:close, state}
+            end
+
+          {:tsig_error, reason, _query} ->
+            Logger.warning("TCP DNS handler: TSIG verification failed: #{inspect(reason)}")
+            {:close, state}
+
+          {:error, reason} ->
+            Logger.error("TCP DNS handler: decode failed: #{inspect(reason)}")
+            {:close, state}
+        end
       else
         {:error, :closed} ->
           {:close, state}

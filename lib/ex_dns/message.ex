@@ -414,10 +414,16 @@ defmodule ExDns.Message do
   @spec encode_name(binary()) :: binary()
 
   def encode_name(""), do: <<0>>
+  def encode_name("."), do: <<0>>
 
   def encode_name(name) when is_binary(name) do
+    # A trailing dot means "fully-qualified, end of name" — strip it
+    # before splitting so we don't emit a stray empty label that
+    # would terminate the name too early when the receiver decodes
+    # it.
     labels =
       name
+      |> String.trim_trailing(".")
       |> String.split(".")
       |> Enum.map(fn label -> <<byte_size(label)::size(8), label::binary>> end)
       |> IO.iodata_to_binary()
@@ -460,8 +466,12 @@ defmodule ExDns.Message do
     {<<0>>, maybe_register(offsets, "", offset)}
   end
 
+  def encode_name(".", offset, offsets) do
+    {<<0>>, maybe_register(offsets, "", offset)}
+  end
+
   def encode_name(name, offset, offsets) when is_binary(name) do
-    labels = String.split(name, ".")
+    labels = name |> String.trim_trailing(".") |> String.split(".")
     encode_labels(labels, offset, offsets, [], 0)
   end
 

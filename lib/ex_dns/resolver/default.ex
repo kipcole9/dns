@@ -350,10 +350,16 @@ defmodule ExDns.Resolver.Default do
     authority = Keyword.get(options, :authority, [])
     additional_records = Keyword.get(options, :additional, [])
 
+    client_opt = query_opt(message)
+    do_bit = match?(%OPT{dnssec_ok: 1}, client_opt)
+
+    answers = if do_bit, do: maybe_sign_records(answers), else: answers
+    authority = if do_bit, do: maybe_sign_records(authority), else: authority
+
     opt_additional =
-      case query_opt(message) do
+      case client_opt do
         nil -> []
-        %OPT{} = client_opt -> [response_opt_for(client_opt, rcode)]
+        %OPT{} -> [response_opt_for(client_opt, rcode)]
       end
 
     additional = additional_records ++ opt_additional
@@ -382,6 +388,45 @@ defmodule ExDns.Resolver.Default do
         authority: authority,
         additional: additional
     }
+  end
+
+  # When the inbound query had the DO bit set and we hold signing keys
+  # for the zone the records belong to, sign each RRset and append its
+  # RRSIG to the section. Records we don't have keys for pass through
+  # unchanged. Already-RRSIG records (e.g., served from a pre-signed
+  # zone) are left alone.
+  defp maybe_sign_records(records) when is_list(records) do
+    records
+    |> Enum.group_by(&{&1.__struct__ == ExDns.Resource.RRSIG, &1.name, &1.__struct__})
+    |> Enum.flat_map(fn
+      {{true, _name, _struct}, rrsigs} ->
+        # Already-signed RRset; pass through.
+        rrsigs
+
+      {{false, name, _struct}, rrset} ->
+        rrset_with_signature(name, rrset)
+    end)
+  end
+
+  defp maybe_sign_records(other), do: other
+
+  defp rrset_with_signature(name, rrset) do
+    case Storage.find_zone(name) do
+      nil ->
+        rrset
+
+      apex ->
+        case ExDns.DNSSEC.KeyStore.get_signing_key(apex) do
+          nil ->
+            rrset
+
+          %{dnskey: dnskey, private_key: private_key} ->
+            case ExDns.DNSSEC.Signer.sign_rrset(rrset, dnskey, private_key, signer: apex) do
+              {:ok, rrsig} -> rrset ++ [rrsig]
+              {:error, _} -> rrset
+            end
+        end
+    end
   end
 
   # Returns the OPT pseudo-RR from the query's additional section, or
