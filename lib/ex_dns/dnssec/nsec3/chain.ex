@@ -68,7 +68,25 @@ defmodule ExDns.DNSSEC.NSEC3.Chain do
     salt = Keyword.get(options, :salt, <<>>)
     iterations = Keyword.get(options, :iterations, 0)
     ttl = Keyword.get(options, :ttl, @default_ttl)
-    flags = Keyword.get(options, :flags, 0)
+    opt_out? = Keyword.get(options, :opt_out, false)
+    flags = compute_flags(opt_out?, Keyword.get(options, :flags, 0))
+
+    zone_norm = canonical(zone)
+
+    # When opt-out is on, RFC 5155 §6 says insecure delegations
+    # (names that have NS but no DS, and aren't the apex) are
+    # NOT represented in the NSEC3 chain. Filter them out before
+    # hashing so the chain skips over them entirely.
+    names_to_types =
+      if opt_out? do
+        names_to_types
+        |> Enum.reject(fn {name, types} ->
+          insecure_delegation?(name, types, zone_norm)
+        end)
+        |> Map.new()
+      else
+        names_to_types
+      end
 
     # Hash every name once; produce {hash, name, types}.
     hashed =
@@ -162,4 +180,25 @@ defmodule ExDns.DNSSEC.NSEC3.Chain do
 
   defp rotate_left([]), do: []
   defp rotate_left([h | t]), do: t ++ [h]
+
+  # RFC 5155 §3.1.2: opt-out flag is bit 0 of the flags byte.
+  # Honour an explicit operator-supplied :flags value but force
+  # the bit on when :opt_out is true so the two options compose.
+  defp compute_flags(true, base_flags), do: Bitwise.bor(base_flags, 1)
+  defp compute_flags(false, base_flags), do: base_flags
+
+  # Insecure delegation = name has NS records but no DS records,
+  # and isn't the zone apex (the apex's NS+SOA pair is always
+  # represented). RFC 5155 §6.
+  defp insecure_delegation?(name, types, zone_norm) do
+    name_norm = canonical(name)
+
+    name_norm != zone_norm and
+      :ns in types and
+      :ds not in types
+  end
+
+  defp canonical(name) when is_binary(name) do
+    name |> String.downcase(:ascii) |> String.trim_trailing(".")
+  end
 end

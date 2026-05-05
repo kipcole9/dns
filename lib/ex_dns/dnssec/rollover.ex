@@ -108,6 +108,14 @@ defmodule ExDns.DNSSEC.Rollover do
     algorithm = Keyword.get(options, :algorithm, @default_algorithm)
     flags = Keyword.get(options, :flags, 256)
 
+    if not ExDns.DNSSEC.AlgorithmPolicy.signing_allowed?(algorithm) do
+      {:error, :algorithm_disallowed}
+    else
+      do_prepare_rollover(zone, algorithm, flags)
+    end
+  end
+
+  defp do_prepare_rollover(zone, algorithm, flags) do
     case generate_keypair(algorithm) do
       {:ok, dnskey_template, private_key} ->
         dnskey = %DNSKEY{

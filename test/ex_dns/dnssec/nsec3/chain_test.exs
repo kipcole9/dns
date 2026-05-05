@@ -98,6 +98,82 @@ defmodule ExDns.DNSSEC.NSEC3.ChainTest do
     end
   end
 
+  describe "opt-out (RFC 5155 §6)" do
+    defp delegation_zone do
+      # Apex with NS+SOA, secure delegation (NS+DS), insecure
+      # delegation (NS only), regular host.
+      %{
+        "example.test" => [:soa, :ns],
+        "secure.example.test" => [:ns, :ds],
+        "insecure.example.test" => [:ns],
+        "host.example.test" => [:a]
+      }
+    end
+
+    test "opt_out: true sets the opt-out flag (bit 0) on every NSEC3" do
+      chain = Chain.build("example.test", delegation_zone(), opt_out: true)
+
+      Enum.each(chain, fn record ->
+        import Bitwise
+        assert (record.flags &&& 1) == 1
+      end)
+    end
+
+    test "opt_out: true excludes insecure delegations from the chain" do
+      chain = Chain.build("example.test", delegation_zone(), opt_out: true)
+      owners = Enum.map(chain, & &1.name)
+
+      # Apex, secure delegation, host all present.
+      apex_owner = NSEC3.hashed_owner_from_hash(NSEC3.hash_name("example.test", <<>>, 0), "example.test")
+      secure_owner = NSEC3.hashed_owner_from_hash(NSEC3.hash_name("secure.example.test", <<>>, 0), "example.test")
+      insecure_owner = NSEC3.hashed_owner_from_hash(NSEC3.hash_name("insecure.example.test", <<>>, 0), "example.test")
+      host_owner = NSEC3.hashed_owner_from_hash(NSEC3.hash_name("host.example.test", <<>>, 0), "example.test")
+
+      assert apex_owner in owners
+      assert secure_owner in owners
+      assert host_owner in owners
+
+      # Insecure delegation excluded — RFC 5155 §6.
+      refute insecure_owner in owners
+    end
+
+    test "opt_out: false (default) includes every name and clears the flag" do
+      chain = Chain.build("example.test", delegation_zone())
+
+      assert length(chain) == 4
+      Enum.each(chain, fn record -> assert record.flags == 0 end)
+    end
+
+    test "opt_out always preserves the apex even when its types include NS" do
+      # Apex has NS + SOA — it's a delegation point in shape but
+      # MUST be in the chain (RFC 5155 §6 explicit carve-out).
+      chain = Chain.build("example.test", %{"example.test" => [:soa, :ns]}, opt_out: true)
+      assert length(chain) == 1
+    end
+
+    test "opt_out + an explicit flags value compose (both bits set)" do
+      chain = Chain.build("example.test", delegation_zone(), opt_out: true, flags: 0b10)
+
+      Enum.each(chain, fn record ->
+        # Bit 0 (opt-out) and bit 1 (operator-supplied) both on.
+        assert record.flags == 0b11
+      end)
+    end
+
+    test "with no insecure delegations the chain is identical to opt_out: false" do
+      zone = %{
+        "example.test" => [:soa, :ns],
+        "secure.example.test" => [:ns, :ds]
+      }
+
+      with_opt = Chain.build("example.test", zone, opt_out: true)
+      without_opt = Chain.build("example.test", zone)
+
+      # Same number of records, just different flag bytes.
+      assert length(with_opt) == length(without_opt)
+    end
+  end
+
   describe "encode_type_bitmap/1" do
     test "produces the standard window/length/bits triplet" do
       bytes = Chain.encode_type_bitmap([:a])

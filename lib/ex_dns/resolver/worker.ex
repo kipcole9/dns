@@ -29,77 +29,12 @@ defmodule ExDns.Resolver.Worker do
   def handle_cast({:udp_query, address, port, socket, message}, resolver) do
     case Message.decode(message) do
       {:ok, query} ->
-        start_metadata = query_metadata(query, address, port)
-        start_time = System.monotonic_time()
-
-        :telemetry.execute(
-          [:ex_dns, :query, :start],
-          %{system_time: System.system_time()},
-          start_metadata
-        )
-
-        try do
-          request =
-            ExDns.Request.new(query,
-              source_ip: address,
-              source_port: port,
-              transport: :udp
-            )
-
-          raw_response = resolver.resolve(request)
-
-          response =
-            raw_response
-            |> then(&ExDns.Cookies.PostProcess.process(query, &1, address))
-            |> then(&ExDns.EDNSClientSubnet.PostProcess.process(query, &1))
-          budget = udp_budget(query)
-
-          # RRL: ask whether this response is allowed out, may be
-          # truncated to force TCP retry, or should be silently
-          # dropped. Cookie-validated queries bypass the limiter.
-          rrl_options = [
-            address: address,
-            cookie_validated: cookie_validated?(query, address)
-          ]
-
-          rrl_decision = rrl_check(query, response, rrl_options)
-
-          case rrl_decision do
-            :allow ->
-              response_bytes = Message.encode_for_udp(response, budget)
-              send_udp_response(response_bytes, address, port, socket)
-
-            :slip ->
-              truncated = truncate_response(response)
-              response_bytes = Message.encode_for_udp(truncated, budget)
-              send_udp_response(response_bytes, address, port, socket)
-
-            :drop ->
-              :ok
-          end
-
-          :telemetry.execute(
-            [:ex_dns, :query, :stop],
-            %{duration: System.monotonic_time() - start_time},
-            Map.merge(start_metadata, response_metadata(response))
-          )
-        catch
-          kind, reason ->
-            stack = __STACKTRACE__
-
-            :telemetry.execute(
-              [:ex_dns, :query, :exception],
-              %{duration: System.monotonic_time() - start_time},
-              Map.merge(start_metadata, %{
-                kind: kind,
-                reason: reason,
-                stacktrace: stack
-              })
-            )
-
-            Logger.error("Resolver crashed: #{inspect({kind, reason})}")
-        after
+        if notify?(query) and notify_acl_decision(query, message, address) == :refuse do
+          # RFC 1996 §3.7: silently drop unauthenticated /
+          # unauthorised NOTIFYs.
           :poolboy.checkin(Resolver.Supervisor.pool_name(), self())
+        else
+          handle_cast_after_acl(query, address, port, socket, resolver)
         end
 
       {:error, reason} ->
@@ -111,6 +46,78 @@ defmodule ExDns.Resolver.Worker do
 
   def handle_cast(_message, resolver) do
     {:noreply, resolver}
+  end
+
+  defp handle_cast_after_acl(query, address, port, socket, resolver) do
+    start_metadata = query_metadata(query, address, port)
+    start_time = System.monotonic_time()
+
+    :telemetry.execute(
+      [:ex_dns, :query, :start],
+      %{system_time: System.system_time()},
+      start_metadata
+    )
+
+    try do
+      request =
+        ExDns.Request.new(query,
+          source_ip: address,
+          source_port: port,
+          transport: :udp
+        )
+
+      raw_response = resolver.resolve(request)
+
+      response =
+        raw_response
+        |> then(&ExDns.Cookies.PostProcess.process(query, &1, address))
+        |> then(&ExDns.EDNSClientSubnet.PostProcess.process(query, &1))
+
+      budget = udp_budget(query)
+
+      # RRL: ask whether this response is allowed out, may be
+      # truncated to force TCP retry, or should be silently
+      # dropped. Cookie-validated queries bypass the limiter.
+      rrl_options = [
+        address: address,
+        cookie_validated: cookie_validated?(query, address)
+      ]
+
+      rrl_decision = rrl_check(query, response, rrl_options)
+
+      case rrl_decision do
+        :allow ->
+          response_bytes = Message.encode_for_udp(response, budget)
+          send_udp_response(response_bytes, address, port, socket)
+
+        :slip ->
+          truncated = truncate_response(response)
+          response_bytes = Message.encode_for_udp(truncated, budget)
+          send_udp_response(response_bytes, address, port, socket)
+
+        :drop ->
+          :ok
+      end
+
+      :telemetry.execute(
+        [:ex_dns, :query, :stop],
+        %{duration: System.monotonic_time() - start_time},
+        Map.merge(start_metadata, response_metadata(response))
+      )
+    catch
+      kind, reason ->
+        stack = __STACKTRACE__
+
+        :telemetry.execute(
+          [:ex_dns, :query, :exception],
+          %{duration: System.monotonic_time() - start_time},
+          Map.merge(start_metadata, %{kind: kind, reason: reason, stacktrace: stack})
+        )
+
+        Logger.error("Resolver crashed: #{inspect({kind, reason})}")
+    after
+      :poolboy.checkin(Resolver.Supervisor.pool_name(), self())
+    end
   end
 
   def handle_info(_info, resolver) do
@@ -163,6 +170,27 @@ defmodule ExDns.Resolver.Worker do
   # the response. The hybrid resolver already sets AD on validated
   # answers; richer status will land with full resolver instrumentation.
   defp validation_status(_answer), do: :none
+
+  # ----- NOTIFY ACL helpers ----------------------------------------
+
+  defp notify?(%Message{header: %{oc: 4}}), do: true
+  defp notify?(_), do: false
+
+  # Verify TSIG on the raw bytes (so the MAC over the wire is
+  # checkable), pull the key name out, then ask
+  # `ExDns.Notify.ACL` whether the source IP + key combination
+  # is permitted for the apex named in the question section.
+  defp notify_acl_decision(%Message{question: %{host: apex}}, raw_bytes, source_ip) do
+    key_name =
+      case ExDns.TSIG.Wire.verify_inbound(raw_bytes) do
+        {:ok, _, %{key_name: name}} -> name
+        _ -> nil
+      end
+
+    ExDns.Notify.ACL.check(apex, source_ip, key_name)
+  end
+
+  defp notify_acl_decision(_query, _raw_bytes, _source_ip), do: :allow
 
   # ----- RRL helpers ------------------------------------------------
 

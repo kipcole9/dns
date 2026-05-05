@@ -67,6 +67,14 @@ defmodule ExDns.DNSSEC.Signer do
   @spec sign_rrset([struct()], DNSKEY.t(), term(), keyword()) ::
           {:ok, RRSIG.t()} | {:error, atom()}
   def sign_rrset([first | _] = records, %DNSKEY{} = dnskey, private_key, options) do
+    if not ExDns.DNSSEC.AlgorithmPolicy.signing_allowed?(dnskey.algorithm) do
+      {:error, :algorithm_disallowed}
+    else
+      do_sign_rrset(records, dnskey, private_key, options, first)
+    end
+  end
+
+  defp do_sign_rrset(records, %DNSKEY{} = dnskey, private_key, options, first) do
     signer = Keyword.fetch!(options, :signer)
     now = System.os_time(:second)
     inception = Keyword.get(options, :inception, now)

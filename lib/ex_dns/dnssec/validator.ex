@@ -64,6 +64,9 @@ defmodule ExDns.DNSSEC.Validator do
   def verify_rrset(records, %RRSIG{} = rrsig, %DNSKEY{} = dnskey)
       when is_list(records) and records != [] do
     cond do
+      not ExDns.DNSSEC.AlgorithmPolicy.validation_allowed?(rrsig.algorithm) ->
+        {:error, :algorithm_disallowed}
+
       rrsig.algorithm != dnskey.algorithm ->
         {:error, :wrong_key}
 

@@ -7,9 +7,9 @@ defmodule ExDns.Resource.NSEC do
   ### NSEC RDATA format
 
       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-      | Next Domain Name           |
+      | Next Domain Name              |
       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-      | Type Bit Maps              |
+      | Type Bit Maps                 |
       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
   This implementation surfaces the type bit maps as a raw binary; a
