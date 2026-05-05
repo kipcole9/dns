@@ -31,6 +31,7 @@ defmodule ExDns.Application do
     # zones configured for autoload below can be inserted as the
     # supervision tree comes up.
     ExDns.Storage.init()
+    ExDns.API.MetricsCounters.init()
 
     port = ExDns.listener_port()
 
@@ -55,7 +56,8 @@ defmodule ExDns.Application do
         secondary_zone_children() ++
         snapshot_children() ++
         catalog_subscription_children() ++
-        api_children()
+        api_children() ++
+        black_hole_children()
 
     opts = [strategy: :one_for_one, name: ExDns.Supervisor]
 
@@ -63,6 +65,7 @@ defmodule ExDns.Application do
       {:ok, _pid} = ok ->
         autoload_zones()
         replay_zone_snapshot()
+        register_configured_plugins()
         attach_optional_telemetry_handlers()
         ExDns.SystemD.notify_ready()
         ok
@@ -151,6 +154,94 @@ defmodule ExDns.Application do
         {:error, reason} ->
           Logger.error("ExDns.Zone.Snapshot: replay of #{path} failed: #{inspect(reason)}")
       end
+    end
+  end
+
+  # Register every plugin module listed in `:ex_dns,
+  # :plugins, [Module1, Module2, ...]` into the in-process
+  # `ExDns.Plugin.Registry` so `/api/v1/plugins` exposes them.
+  defp register_configured_plugins do
+    require Logger
+
+    explicit = Application.get_env(:ex_dns, :plugins, [])
+    auto = auto_registered_plugins()
+
+    (auto ++ explicit)
+    |> Enum.uniq()
+    |> Enum.each(fn module ->
+      case ExDns.Plugin.Registry.register(module) do
+        :ok ->
+          Logger.info("ExDns.Plugin.Registry: registered #{inspect(module)}")
+
+        {:error, reason} ->
+          Logger.warning(
+            "ExDns.Plugin.Registry: failed to register #{inspect(module)}: #{inspect(reason)}"
+          )
+      end
+    end)
+  end
+
+  # When the mDNS subsystem is on, register its plugin so the
+  # UI exposes the visualizer's data automatically.
+  defp auto_registered_plugins do
+    [
+      mdns_plugin_module(),
+      blackhole_plugin_module(),
+      anycast_plugin_module()
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp mdns_plugin_module do
+    case Application.get_env(:ex_dns, :mdns) do
+      list when is_list(list) ->
+        if Keyword.get(list, :enabled, false), do: ExDns.MDNS.Plugin
+
+      _ ->
+        nil
+    end
+  end
+
+  defp blackhole_plugin_module do
+    case Application.get_env(:ex_dns, :black_hole) do
+      list when is_list(list) ->
+        if Keyword.get(list, :enabled, false), do: ExDns.BlackHole.Plugin
+
+      _ ->
+        nil
+    end
+  end
+
+  defp anycast_plugin_module do
+    case Application.get_env(:ex_dns, :anycast) do
+      list when is_list(list) ->
+        if list[:regions] not in [nil, []], do: ExDns.Anycast.Plugin
+
+      _ ->
+        nil
+    end
+  end
+
+  # Initialise the BlackHole storage adapter and start its
+  # supporting workers (query-log writer, retention sweeper)
+  # when the plugin is enabled. The auto-register hook above
+  # then adds `ExDns.BlackHole.Plugin` to the registry.
+  defp black_hole_children do
+    case Application.get_env(:ex_dns, :black_hole) do
+      list when is_list(list) ->
+        if Keyword.get(list, :enabled, false) do
+          :ok = ExDns.BlackHole.Storage.init()
+
+          [
+            ExDns.BlackHole.QueryLog,
+            ExDns.BlackHole.QueryLog.Sweeper
+          ]
+        else
+          []
+        end
+
+      _ ->
+        []
     end
   end
 

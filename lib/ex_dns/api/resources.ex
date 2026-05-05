@@ -81,6 +81,164 @@ defmodule ExDns.API.Resources do
     end
   end
 
+  @doc """
+  Add a new record to `apex`. Decodes the JSON rdata via the
+  resource module's `decode_rdata/1` (per
+  `ExDns.Resource.JSON`) and writes the augmented record set
+  back via `Storage.put_zone/2`.
+
+  Triggers an `ExDns.Zone.Snapshot.Writer.request/0` — the
+  same hook RFC 2136 UPDATE uses — so on-disk state catches up.
+
+  ### Returns
+
+  * `{:ok, record_json}` — the new record's API JSON
+    (including its assigned id).
+  * `{:error, :zone_not_loaded}` when the apex is unknown.
+  * `{:error, :invalid_type}` when the type isn't recognised.
+  * `{:error, reason}` from the resource module's
+    `decode_rdata/1` on rdata-shape problems.
+  """
+  @spec add_record(binary(), map()) :: {:ok, map()} | {:error, term()}
+  def add_record(apex, attributes) when is_map(attributes) do
+    apex_norm = normalise(apex)
+
+    with {:ok, current} <- dump_zone(apex_norm),
+         {:ok, record} <- build_record(attributes) do
+      records = current ++ [record]
+      Storage.put_zone(apex_norm, records)
+      ExDns.Zone.Snapshot.Writer.request()
+      {:ok, APIJSON.record(record)}
+    end
+  end
+
+  @doc """
+  Replace one record (identified by its API id). The new
+  record's name/ttl/class/rdata come from `attributes`. The id
+  itself is recomputed (a successful PATCH always changes
+  the id, since it hashes the new content).
+
+  ### Returns
+
+  * `{:ok, new_record_json}`.
+  * `{:error, :zone_not_loaded | :record_not_found |
+    :invalid_type | reason}`.
+  """
+  @spec update_record(binary(), binary(), map()) ::
+          {:ok, map()} | {:error, term()}
+  def update_record(apex, id, attributes) when is_binary(id) and is_map(attributes) do
+    apex_norm = normalise(apex)
+
+    with {:ok, current} <- dump_zone(apex_norm),
+         {:ok, replaced, kept} <- partition_by_id(current, id),
+         _ = replaced,
+         {:ok, new_record} <- build_record(attributes) do
+      records = kept ++ [new_record]
+      Storage.put_zone(apex_norm, records)
+      ExDns.Zone.Snapshot.Writer.request()
+      {:ok, APIJSON.record(new_record)}
+    end
+  end
+
+  @doc """
+  Delete the record with the given API id from `apex`.
+
+  ### Returns
+
+  * `:ok`.
+  * `{:error, :zone_not_loaded | :record_not_found}`.
+  """
+  @spec delete_record(binary(), binary()) :: :ok | {:error, term()}
+  def delete_record(apex, id) when is_binary(id) do
+    apex_norm = normalise(apex)
+
+    with {:ok, current} <- dump_zone(apex_norm),
+         {:ok, _removed, kept} <- partition_by_id(current, id) do
+      Storage.put_zone(apex_norm, kept)
+      ExDns.Zone.Snapshot.Writer.request()
+      :ok
+    end
+  end
+
+  @doc """
+  Re-read every zone file in `:ex_dns, :zones`, replacing the
+  in-memory copy. Returns `{:ok, %{loaded, failed}}`.
+  """
+  @spec reload_zones() :: {:ok, %{loaded: non_neg_integer(), failed: non_neg_integer()}}
+  def reload_zones do
+    {loaded, failed} = ExDns.Zone.Reload.reload_all()
+    ExDns.Zone.Snapshot.Writer.request()
+    {:ok, %{loaded: loaded, failed: failed}}
+  end
+
+  defp dump_zone(apex) do
+    case Storage.dump_zone(apex) do
+      {:ok, records} -> {:ok, records}
+      {:error, :not_loaded} -> {:error, :zone_not_loaded}
+    end
+  end
+
+  # Build a fully-populated resource struct from a JSON-shaped
+  # `attributes` map (`%{"name" => …, "type" => …, "ttl" => …,
+  # "class" => …, "rdata" => %{…}}`).
+  defp build_record(%{"type" => type} = attributes) when is_binary(type) do
+    case resource_module_for(type) do
+      nil ->
+        {:error, :invalid_type}
+
+      module ->
+        rdata = Map.get(attributes, "rdata", %{})
+
+        cond do
+          not function_exported?(module, :decode_rdata, 1) ->
+            {:error, :type_not_writable}
+
+          true ->
+            case module.decode_rdata(rdata) do
+              {:ok, partial} -> {:ok, populate_envelope(partial, attributes)}
+              {:error, _} = err -> err
+            end
+        end
+    end
+  end
+
+  defp build_record(_), do: {:error, :missing_type}
+
+  defp populate_envelope(struct, attributes) do
+    %{
+      struct
+      | name: Map.get(attributes, "name"),
+        ttl: Map.get(attributes, "ttl", 60),
+        class: parse_class(Map.get(attributes, "class", "IN"))
+    }
+  end
+
+  defp parse_class("IN"), do: :in
+  defp parse_class("CH"), do: :ch
+  defp parse_class("HS"), do: :hs
+  defp parse_class(other) when is_atom(other), do: other
+  defp parse_class(_), do: :in
+
+  defp resource_module_for(type) when is_binary(type) do
+    upcased = String.upcase(type)
+    candidate = Module.concat([ExDns.Resource, upcased])
+
+    if Code.ensure_loaded?(candidate) and function_exported?(candidate, :__struct__, 0) do
+      candidate
+    end
+  end
+
+  defp partition_by_id(records, id) do
+    matched = Enum.find(records, fn r -> APIJSON.record_id(r) == id end)
+
+    if matched do
+      kept = Enum.reject(records, fn r -> APIJSON.record_id(r) == id end)
+      {:ok, matched, kept}
+    else
+      {:error, :record_not_found}
+    end
+  end
+
   @doc "Snapshot for one secondary zone, or `nil` when none is configured."
   @spec secondary(binary()) :: map() | nil
   def secondary(apex) do
@@ -99,12 +257,82 @@ defmodule ExDns.API.Resources do
     end
   end
 
-  @doc "DNSSEC key inventory across all zones."
+  @doc """
+  Trigger an immediate refresh on the secondary state machine
+  for `apex`. Returns `:ok` or `{:error, :no_secondary_for_zone}`.
+  """
+  @spec refresh_secondary(binary()) :: :ok | {:error, :no_secondary_for_zone}
+  def refresh_secondary(apex) when is_binary(apex) do
+    ExDns.Zone.Secondary.notify(apex)
+  end
+
+  @doc """
+  Advance a DNSSEC key through its rollover lifecycle.
+  """
+  @spec advance_rollover(binary(), atom(), atom(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def advance_rollover(zone, role, phase, options \\ [])
+
+  def advance_rollover(zone, :zsk, :prepare, options) do
+    wrap_rollover(ExDns.DNSSEC.Rollover.prepare_zsk_rollover(zone, options))
+  end
+
+  def advance_rollover(zone, :zsk, :complete, options) do
+    new_key_tag = Keyword.fetch!(options, :new_key_tag)
+    wrap_rollover(ExDns.DNSSEC.Rollover.complete_zsk_rollover(zone, new_key_tag))
+  end
+
+  def advance_rollover(zone, :zsk, :purge, _options) do
+    wrap_rollover(ExDns.DNSSEC.Rollover.purge_retired_keys(zone))
+  end
+
+  def advance_rollover(zone, :ksk, :prepare, options) do
+    wrap_rollover(ExDns.DNSSEC.Rollover.prepare_ksk_rollover(zone, options))
+  end
+
+  def advance_rollover(zone, :ksk, :complete, options) do
+    new_key_tag = Keyword.fetch!(options, :new_key_tag)
+    wrap_rollover(ExDns.DNSSEC.Rollover.complete_ksk_rollover(zone, new_key_tag))
+  end
+
+  def advance_rollover(_zone, _role, _phase, _options), do: {:error, :unknown_phase}
+
+  defp wrap_rollover({:ok, info}), do: {:ok, format_rollover(info)}
+  defp wrap_rollover({:error, _} = err), do: err
+  defp wrap_rollover(other), do: {:ok, format_rollover_other(other)}
+
+  defp format_rollover(info) when is_map(info) do
+    Enum.into(info, %{}, fn {k, v} -> {to_key(k), to_jsonable(v)} end)
+  end
+
+  defp format_rollover(info), do: %{"result" => to_jsonable(info)}
+
+  defp format_rollover_other(other), do: %{"result" => to_jsonable(other)}
+
+  defp to_key(k) when is_atom(k), do: Atom.to_string(k)
+  defp to_key(k), do: to_string(k)
+
+  defp to_jsonable(v) when is_atom(v) and not is_boolean(v) and not is_nil(v),
+    do: Atom.to_string(v)
+
+  defp to_jsonable(v) when is_tuple(v), do: inspect(v)
+  defp to_jsonable(v), do: v
+
+  @doc """
+  DNSSEC key inventory across every loaded zone. Calls
+  `ExDns.DNSSEC.KeyStore.signing_keys/1` per zone and
+  flattens.
+  """
   @spec keys() :: [map()]
   def keys do
     if Code.ensure_loaded?(ExDns.DNSSEC.KeyStore) and
-         function_exported?(ExDns.DNSSEC.KeyStore, :all_signing_keys, 0) do
-      ExDns.DNSSEC.KeyStore.all_signing_keys()
+         function_exported?(ExDns.DNSSEC.KeyStore, :signing_keys, 1) do
+      Storage.zones()
+      |> Enum.flat_map(fn apex ->
+        apex
+        |> ExDns.DNSSEC.KeyStore.signing_keys()
+        |> Enum.map(fn key -> Map.put(key, :zone, apex) end)
+      end)
       |> Enum.map(&format_key/1)
     else
       []
@@ -122,6 +350,27 @@ defmodule ExDns.API.Resources do
     end
   end
 
+  @doc "One plugin's metadata + UI block, or `nil`."
+  @spec plugin(binary()) :: map() | nil
+  def plugin(slug) do
+    if Code.ensure_loaded?(ExDns.Plugin.Registry) do
+      ExDns.Plugin.Registry.get(slug)
+    end
+  end
+
+  @doc """
+  Fetch a plugin's named resource. Returns `{:ok, payload}`
+  / `{:error, :unknown_plugin | :not_found | reason}`.
+  """
+  @spec plugin_resource(binary(), binary()) :: {:ok, term()} | {:error, term()}
+  def plugin_resource(slug, resource) when is_binary(slug) and is_binary(resource) do
+    if Code.ensure_loaded?(ExDns.Plugin.Registry) do
+      ExDns.Plugin.Registry.get_resource(slug, resource)
+    else
+      {:error, :unknown_plugin}
+    end
+  end
+
   @doc """
   Time-bucketed metrics summary (queries by qtype, RRL drops,
   cache hit/miss, DNSSEC outcomes) over the last `window_secs`.
@@ -132,13 +381,7 @@ defmodule ExDns.API.Resources do
   """
   @spec metrics_summary(pos_integer()) :: map()
   def metrics_summary(window_secs) do
-    %{
-      "window_seconds" => window_secs,
-      "queries" => metrics_value(:queries) || %{},
-      "rrl_drops" => metrics_value(:rrl_drops) || 0,
-      "cache_hits" => metrics_value(:cache_hits) || %{"hit" => 0, "miss" => 0},
-      "dnssec" => metrics_value(:dnssec) || %{}
-    }
+    ExDns.API.MetricsCounters.snapshot(window_secs)
   end
 
   # ----- helpers ----------------------------------------------------
@@ -333,6 +576,4 @@ defmodule ExDns.API.Resources do
       "state" => key |> Map.get(:state, :active) |> to_string()
     }
   end
-
-  defp metrics_value(_), do: nil
 end

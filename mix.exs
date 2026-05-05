@@ -46,7 +46,9 @@ defmodule ExDns.Mixfile do
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:stream_data, "~> 1.1", only: [:dev, :test], runtime: false},
-      {:benchee, "~> 1.3", only: :bench, runtime: false}
+      {:benchee, "~> 1.3", only: :bench, runtime: false},
+      {:exqlite, "~> 0.27", optional: true},
+      {:req, "~> 0.5", optional: true}
     ] ++ maybe_json_polyfill()
   end
 

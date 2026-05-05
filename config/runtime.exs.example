@@ -1,0 +1,135 @@
+# Example runtime.exs for production-ish ExDns deployments.
+#
+# Drop this in `config/runtime.exs` and edit the marked spots
+# for your environment. Every block is opt-in — strip out the
+# subsystems you don't want.
+
+import Config
+
+# ----- Listener bindings -------------------------------------
+
+# DNS protocol port. Use 53 in production (requires the BEAM
+# to be allowed to bind low ports — typically via setcap or
+# running as root briefly during start).
+config :ex_dns,
+  listener_port: System.get_env("EXDNS_PORT", "53") |> String.to_integer()
+
+# ----- Zones to load on start --------------------------------
+
+config :ex_dns,
+  zones: ["/etc/exdns/zones.d/*.zone"]
+
+# ----- Server identity (RFC 5001 NSID) -----------------------
+
+config :ex_dns, :nsid,
+  enabled: true,
+  identifier: System.get_env("EXDNS_NSID", "ns1.example")
+
+# ----- Refuse-ANY (RFC 8482) ---------------------------------
+
+config :ex_dns, refuse_any: true
+
+# ----- Persistent zone snapshot ------------------------------
+# Runtime mutations (RFC 2136 UPDATE, AXFR, catalog applies)
+# write to memory + this snapshot file. Replayed on next boot.
+
+config :ex_dns, :zone_snapshot,
+  enabled: true,
+  path: "/var/lib/exdns/snapshot.bin"
+
+# ----- Admin HTTP API (/api/v1/*) ----------------------------
+
+config :ex_dns, :api,
+  enabled: true,
+  port: 9571,
+  bind: {127, 0, 0, 1},
+  token_path: "/var/lib/exdns/tokens.json"
+
+# Admin probes (separate port)
+config :ex_dns, :health,
+  enabled: true,
+  port: 9572
+
+# ----- DNSSEC zone choices -----------------------------------
+# Default is NSEC. Opt zones into NSEC3 individually.
+
+config :ex_dns, :dnssec_zones, %{
+  # "example.com" => [denial: :nsec3, salt: <<>>, iterations: 0]
+}
+
+# ----- TSIG keys ---------------------------------------------
+
+config :ex_dns, :tsig_keys, %{
+  # "transfer.example." => %{
+  #   algorithm: "hmac-sha256.",
+  #   secret_base64: System.get_env("EXDNS_TRANSFER_TSIG_KEY")
+  # }
+}
+
+# ----- Per-zone forwarders -----------------------------------
+
+config :ex_dns, :per_zone_forwarders, %{
+  # "internal.example" => [{{10, 0, 0, 5}, 53}]
+}
+
+# ----- Recursor: prefetch + serve-stale ----------------------
+
+config :ex_dns,
+  recursor_prefetch_enabled: true,
+  recursor_prefetch_fraction: 0.1,
+  recursor_serve_stale_ttl: 86_400
+
+# ----- BlackHole (pi-hole-equivalent filtering) --------------
+# Off unless you want it. Pulls subscribed adlists into a
+# compiled match set and intercepts queries from the CIDRs
+# declared in the groups table (managed via the UI).
+
+config :ex_dns, :black_hole,
+  enabled: true,
+  storage:
+    {ExDns.BlackHole.Storage.SQLite,
+     [path: "/var/lib/exdns/black_hole.sqlite"]},
+  default_block_response: :nxdomain,
+  query_log_capacity: 100_000,
+  query_log_max_age_seconds: 604_800,
+  default_subscriber_interval_seconds: 86_400
+
+# ----- Anycast (per-region answer synthesis) -----------------
+
+config :ex_dns, :anycast,
+  regions: [
+    # %{
+    #   id: :eu,
+    #   cidrs: [{{198, 51, 100, 0}, 24}],
+    #   qname_suffix: "cdn.example",
+    #   answers: %{a: {192, 0, 2, 1}}
+    # }
+  ]
+
+# ----- Plugin pipeline ---------------------------------------
+# When ANY plugin (BlackHole, Anycast, mDNS, custom) is
+# registered, route the resolver through the plugin pipeline.
+
+config :ex_dns,
+  resolver_module: ExDns.Resolver.Plugins
+
+config :ex_dns, :plugin_pipeline,
+  underlying: ExDns.Resolver.Default
+
+# ----- Observability -----------------------------------------
+
+# Prometheus metrics on a dedicated port
+config :ex_dns, :metrics,
+  enabled: true,
+  port: 9573
+
+# Structured query log
+config :ex_dns, :structured_logs, enabled: true
+
+# OpenTelemetry tracing (requires :opentelemetry_api)
+config :ex_dns, :open_telemetry, enabled: false
+
+# dnstap binary log
+config :ex_dns, :dnstap,
+  enabled: false,
+  path: "/var/log/exdns/queries.dnstap"

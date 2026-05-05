@@ -22,6 +22,13 @@ defmodule ExDns.API.Router do
   alias ExDns.API.JSON, as: APIJSON
 
   plug(:match)
+
+  plug(Plug.Parsers,
+    parsers: [:json],
+    pass: ["application/json"],
+    json_decoder: ExDns.API.JSON.Decoder
+  )
+
   plug(:dispatch_unauth)
 
   # ----- public probes (no bearer) ----------------------------------
@@ -71,12 +78,140 @@ defmodule ExDns.API.Router do
     end
   end
 
+  post "/api/v1/zones/:apex/records" do
+    conn =
+      conn
+      |> auth()
+      |> Auth.require_role(:zone_admin)
+      |> Auth.require_scope(apex)
+
+    if conn.halted do
+      conn
+    else
+      case Resources.add_record(apex, conn.body_params) do
+        {:ok, record} ->
+          respond(conn, 201, record)
+
+        {:error, :zone_not_loaded} ->
+          respond(conn, 404, %{"error" => "zone not found"})
+
+        {:error, reason} ->
+          respond(conn, 422, %{"error" => to_string(reason)})
+      end
+    end
+  end
+
+  patch "/api/v1/zones/:apex/records/:id" do
+    conn =
+      conn
+      |> auth()
+      |> Auth.require_role(:zone_admin)
+      |> Auth.require_scope(apex)
+
+    if conn.halted do
+      conn
+    else
+      case Resources.update_record(apex, id, conn.body_params) do
+        {:ok, record} ->
+          respond(conn, 200, record)
+
+        {:error, :zone_not_loaded} ->
+          respond(conn, 404, %{"error" => "zone not found"})
+
+        {:error, :record_not_found} ->
+          respond(conn, 404, %{"error" => "record not found"})
+
+        {:error, reason} ->
+          respond(conn, 422, %{"error" => to_string(reason)})
+      end
+    end
+  end
+
+  delete "/api/v1/zones/:apex/records/:id" do
+    conn =
+      conn
+      |> auth()
+      |> Auth.require_role(:zone_admin)
+      |> Auth.require_scope(apex)
+
+    if conn.halted do
+      conn
+    else
+      case Resources.delete_record(apex, id) do
+        :ok ->
+          respond(conn, 204, %{})
+
+        {:error, :zone_not_loaded} ->
+          respond(conn, 404, %{"error" => "zone not found"})
+
+        {:error, :record_not_found} ->
+          respond(conn, 404, %{"error" => "record not found"})
+      end
+    end
+  end
+
+  post "/api/v1/zones/:apex/reload" do
+    conn =
+      conn
+      |> auth()
+      |> Auth.require_role(:zone_admin)
+      |> Auth.require_scope(apex)
+
+    if conn.halted do
+      conn
+    else
+      {:ok, payload} = Resources.reload_zones()
+      respond(conn, 200, payload)
+    end
+  end
+
   get "/api/v1/secondaries/:apex" do
     conn = auth(conn)
 
     case Resources.secondary(apex) do
       nil -> respond(conn, 404, %{"error" => "no secondary for zone"})
       snapshot -> respond(conn, 200, snapshot)
+    end
+  end
+
+  post "/api/v1/secondaries/:apex/refresh" do
+    conn =
+      conn
+      |> auth()
+      |> Auth.require_role(:zone_admin)
+      |> Auth.require_scope(apex)
+
+    if conn.halted do
+      conn
+    else
+      case Resources.refresh_secondary(apex) do
+        :ok ->
+          respond(conn, 200, %{"apex" => apex, "triggered" => true})
+
+        {:error, :no_secondary_for_zone} ->
+          respond(conn, 404, %{"error" => "no secondary for zone"})
+      end
+    end
+  end
+
+  post "/api/v1/keys/:zone/rollover/:phase" do
+    conn = conn |> auth() |> Auth.require_role(:cluster_admin)
+
+    if conn.halted do
+      conn
+    else
+      role =
+        conn.body_params
+        |> Map.get("role", "zsk")
+        |> normalise_atom([:zsk, :ksk])
+
+      phase_atom = normalise_atom(phase, [:prepare, :complete, :purge])
+      options = rollover_options(conn.body_params)
+
+      case Resources.advance_rollover(zone, role, phase_atom, options) do
+        {:ok, info} -> respond(conn, 200, info)
+        {:error, reason} -> respond(conn, 422, %{"error" => to_string(reason)})
+      end
     end
   end
 
@@ -95,6 +230,61 @@ defmodule ExDns.API.Router do
       conn
     else
       ExDns.API.SSE.run(conn)
+    end
+  end
+
+  get "/api/v1/plugins/:slug" do
+    conn = auth(conn)
+
+    case Resources.plugin(slug) do
+      nil -> respond(conn, 404, %{"error" => "plugin not found"})
+      plugin -> respond(conn, 200, plugin)
+    end
+  end
+
+  get "/api/v1/plugins/:slug/resources/:resource" do
+    conn = auth(conn)
+
+    case Resources.plugin_resource(slug, resource) do
+      {:ok, payload} ->
+        respond(conn, 200, %{"resource" => resource, "data" => payload})
+
+      {:error, :unknown_plugin} ->
+        respond(conn, 404, %{"error" => "plugin not found"})
+
+      {:error, :not_found} ->
+        respond(conn, 404, %{"error" => "resource not found"})
+
+      {:error, reason} ->
+        respond(conn, 500, %{"error" => to_string(reason)})
+    end
+  end
+
+  post "/api/v1/plugins/:slug/actions/:name" do
+    conn =
+      conn
+      |> auth()
+      |> Auth.require_role(:zone_admin)
+      |> Auth.require_scope("plugin:" <> slug)
+
+    if conn.halted do
+      conn
+    else
+      params = conn.body_params || %{}
+
+      case ExDns.Plugin.Registry.dispatch_action(slug, name, params) do
+        {:ok, payload} ->
+          respond(conn, 200, %{"action" => name, "data" => payload})
+
+        {:error, :unknown_plugin} ->
+          respond(conn, 404, %{"error" => "plugin not found"})
+
+        {:error, :no_action} ->
+          respond(conn, 404, %{"error" => "plugin does not accept actions"})
+
+        {:error, reason} ->
+          respond(conn, 422, %{"error" => to_string(reason)})
+      end
     end
   end
 
@@ -170,4 +360,27 @@ defmodule ExDns.API.Router do
   defp parse_int(_, default), do: default
 
   defp clamp(n, min_v, max_v), do: n |> max(min_v) |> min(max_v)
+
+  defp normalise_atom(value, allowed) when is_binary(value) do
+    atom = value |> String.downcase() |> String.to_existing_atom()
+    if atom in allowed, do: atom, else: hd(allowed)
+  rescue
+    ArgumentError -> hd(allowed)
+  end
+
+  defp normalise_atom(value, allowed) when is_atom(value) do
+    if value in allowed, do: value, else: hd(allowed)
+  end
+
+  defp normalise_atom(_, allowed), do: hd(allowed)
+
+  defp rollover_options(%{} = body) do
+    Enum.flat_map(body, fn
+      {"new_key_tag", tag} when is_integer(tag) -> [new_key_tag: tag]
+      {"role", _} -> []
+      _ -> []
+    end)
+  end
+
+  defp rollover_options(_), do: []
 end

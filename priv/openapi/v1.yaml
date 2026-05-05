@@ -146,6 +146,94 @@ paths:
                       $ref: '#/components/schemas/Record'
         '404':
           $ref: '#/components/responses/NotFound'
+    post:
+      tags: [zones]
+      summary: Add a new record to the zone.
+      operationId: addRecord
+      parameters:
+        - $ref: '#/components/parameters/Apex'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Record'
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Record'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Invalid record shape.
+
+  /api/v1/zones/{apex}/records/{id}:
+    patch:
+      tags: [zones]
+      summary: Replace a single record.
+      operationId: updateRecord
+      parameters:
+        - $ref: '#/components/parameters/Apex'
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Record'
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Record'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Invalid record shape.
+    delete:
+      tags: [zones]
+      summary: Delete a single record.
+      operationId: deleteRecord
+      parameters:
+        - $ref: '#/components/parameters/Apex'
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted.
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/zones/{apex}/reload:
+    post:
+      tags: [zones]
+      summary: Re-read every zone file from disk.
+      operationId: reloadZones
+      parameters:
+        - $ref: '#/components/parameters/Apex'
+      responses:
+        '200':
+          description: Counts of loaded vs failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [loaded, failed]
+                properties:
+                  loaded: { type: integer }
+                  failed: { type: integer }
 
   /api/v1/secondaries/{apex}:
     get:
@@ -163,6 +251,61 @@ paths:
                 $ref: '#/components/schemas/SecondarySnapshot'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /api/v1/secondaries/{apex}/refresh:
+    post:
+      tags: [secondaries]
+      summary: Trigger an immediate refresh on the secondary.
+      operationId: refreshSecondary
+      parameters:
+        - $ref: '#/components/parameters/Apex'
+      responses:
+        '200':
+          description: Triggered.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apex: { type: string }
+                  triggered: { type: boolean }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/keys/{zone}/rollover/{phase}:
+    post:
+      tags: [keys]
+      summary: Advance a DNSSEC key through a rollover phase.
+      operationId: advanceRollover
+      parameters:
+        - in: path
+          name: zone
+          required: true
+          schema: { type: string }
+        - in: path
+          name: phase
+          required: true
+          schema:
+            type: string
+            enum: [prepare, complete, purge]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { type: string, enum: [zsk, ksk] }
+                new_key_tag: { type: integer }
+      responses:
+        '200':
+          description: Phase result.
+          content:
+            application/json:
+              schema:
+                type: object
+        '422':
+          description: Unknown phase or invalid arguments.
 
   /api/v1/keys:
     get:
@@ -201,6 +344,88 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Plugin'
+
+  /api/v1/plugins/{slug}:
+    get:
+      tags: [plugins]
+      summary: One plugin's metadata + UI block.
+      operationId: getPlugin
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Plugin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plugin'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/plugins/{slug}/resources/{resource}:
+    get:
+      tags: [plugins]
+      summary: Fetch a plugin-supplied resource.
+      operationId: getPluginResource
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+        - in: path
+          name: resource
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Resource payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resource: { type: string }
+                  data: { type: object }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/plugins/{slug}/actions/{name}:
+    post:
+      tags: [plugins]
+      summary: Dispatch a mutating action to a plugin.
+      operationId: pluginAction
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Action result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  action: { type: string }
+                  data: { type: object }
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Action error.
 
   /api/v1/metrics/summary:
     get:

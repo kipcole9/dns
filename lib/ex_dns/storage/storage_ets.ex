@@ -173,7 +173,21 @@ defmodule ExDns.Storage.ETS do
   @spec zones() :: [binary()]
   def zones do
     init()
-    @index_table |> :ets.tab2list() |> Enum.map(fn {apex, _table} -> apex end)
+
+    @index_table
+    |> :ets.tab2list()
+    |> Enum.flat_map(fn {apex, table} ->
+      # Drop stale index entries pointing at ETS tables whose
+      # owner has died. See `dump_zone/1` for the same guard.
+      case :ets.info(table, :size) do
+        :undefined ->
+          :ets.delete(@index_table, apex)
+          []
+
+        _ ->
+          [apex]
+      end
+    end)
   end
 
   @doc """
@@ -409,9 +423,23 @@ defmodule ExDns.Storage.ETS do
 
     case :ets.lookup(@index_table, apex) do
       [{^apex, table}] ->
-        all_records = :ets.foldl(fn {{_name, _type}, rrs}, acc -> rrs ++ acc end, [], table)
-        {soa, rest} = Enum.split_with(all_records, &match?(%ExDns.Resource.SOA{}, &1))
-        {:ok, soa ++ rest}
+        # The per-zone ETS table is owned by whichever process
+        # called `put_zone/2`. If that process exited, the
+        # table goes with it but the index entry remains
+        # stale. Detect + clean up so callers get a clean
+        # `:not_loaded` instead of an `:ets.foldl` crash.
+        case :ets.info(table, :size) do
+          :undefined ->
+            :ets.delete(@index_table, apex)
+            {:error, :not_loaded}
+
+          _ ->
+            all_records =
+              :ets.foldl(fn {{_name, _type}, rrs}, acc -> rrs ++ acc end, [], table)
+
+            {soa, rest} = Enum.split_with(all_records, &match?(%ExDns.Resource.SOA{}, &1))
+            {:ok, soa ++ rest}
+        end
 
       [] ->
         {:error, :not_loaded}

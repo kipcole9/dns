@@ -51,6 +51,8 @@ defmodule ExDns.API.Auth do
   Role hierarchy: `cluster_admin > zone_admin > viewer`.
   """
   @spec require_role(Plug.Conn.t(), atom() | binary()) :: Plug.Conn.t()
+  def require_role(%Plug.Conn{halted: true} = conn, _), do: conn
+
   def require_role(conn, required_role) do
     if has_role?(conn.assigns[:exdns_token], required_role) do
       conn
@@ -65,6 +67,8 @@ defmodule ExDns.API.Auth do
   An empty scope list means "all zones".
   """
   @spec require_scope(Plug.Conn.t(), binary()) :: Plug.Conn.t()
+  def require_scope(%Plug.Conn{halted: true} = conn, _), do: conn
+
   def require_scope(conn, zone) when is_binary(zone) do
     token = conn.assigns[:exdns_token] || %{}
 
