@@ -121,6 +121,7 @@ defmodule ExDns.Drain do
 
     Logger.info("ExDns.Drain: starting drain (timeout=#{timeout}ms)")
     mark_draining()
+    ExDns.SystemD.notify_stopping()
 
     :telemetry.execute(
       [:ex_dns, :drain, :start],

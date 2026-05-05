@@ -97,8 +97,9 @@ defmodule ExDns.Listener.TCP do
               end
 
             response =
-              query
-              |> ExDns.Cookies.PostProcess.process(raw_response, source_ip)
+              raw_response
+              |> then(&ExDns.Cookies.PostProcess.process(query, &1, source_ip))
+              |> then(&ExDns.EDNSClientSubnet.PostProcess.process(query, &1))
               |> maybe_pad(query)
 
             :telemetry.execute(
@@ -107,18 +108,12 @@ defmodule ExDns.Listener.TCP do
               Map.merge(start_metadata, response_metadata(response))
             )
 
-            case ExDns.TSIG.Wire.sign_outbound(response, tsig_context) do
-              {:ok, response_bytes} ->
-                :ok =
-                  ThousandIsland.Socket.send(
-                    socket,
-                    <<byte_size(response_bytes)::size(16), response_bytes::binary>>
-                  )
-
+            case stream_or_send(socket, query, response, tsig_context) do
+              :ok ->
                 handle_one(socket, state)
 
               {:error, reason} ->
-                Logger.error("TCP DNS handler: response signing failed: #{inspect(reason)}")
+                Logger.error("TCP DNS handler: response failed: #{inspect(reason)}")
                 {:close, state}
             end
 
@@ -180,6 +175,43 @@ defmodule ExDns.Listener.TCP do
     end
 
     defp transfer_acl_decision(_, _, _), do: :allow
+
+    # AXFR may need to be split across multiple TCP messages
+    # (RFC 5936 §2.2) when the zone is large. For other queries
+    # we send the single response framed.
+    defp stream_or_send(socket, %ExDns.Message{question: %{type: :axfr}}, response, tsig_context) do
+      messages = ExDns.Zone.AxfrStream.chunk(response)
+      send_chunks(socket, messages, tsig_context)
+    end
+
+    defp stream_or_send(socket, _query, response, tsig_context) do
+      case ExDns.TSIG.Wire.sign_outbound(response, tsig_context) do
+        {:ok, bytes} -> send_framed(socket, bytes)
+        {:error, _} = err -> err
+      end
+    end
+
+    defp send_chunks(_socket, [], _tsig_context), do: :ok
+
+    defp send_chunks(socket, [message | rest], tsig_context) do
+      case ExDns.TSIG.Wire.sign_outbound(message, tsig_context) do
+        {:ok, bytes} ->
+          case send_framed(socket, bytes) do
+            :ok -> send_chunks(socket, rest, tsig_context)
+            err -> err
+          end
+
+        {:error, _} = err ->
+          err
+      end
+    end
+
+    defp send_framed(socket, bytes) do
+      ThousandIsland.Socket.send(
+        socket,
+        <<byte_size(bytes)::size(16), bytes::binary>>
+      )
+    end
 
     # Apply EDNS padding when the query advertised it. RFC 8467
     # §6.2: "REQUIRED" on encrypted transports — `tcp_listener` is

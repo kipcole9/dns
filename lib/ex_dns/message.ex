@@ -364,7 +364,8 @@ defmodule ExDns.Message do
   # A compression pointer. The pointer is always terminal — anything after
   # the pointer in the current binary belongs to the *next* field, not to
   # the name itself.
-  defp decode_name_labels(<<0b11::size(2), offset::size(14), rest::binary>>, labels, message) do
+  defp decode_name_labels(<<0b11::size(2), offset::size(14), rest::binary>>, labels, message)
+       when byte_size(message) > offset do
     <<_skip::bytes-size(^offset), pointed_at::binary>> = message
 
     case decode_name_labels(pointed_at, [], message) do

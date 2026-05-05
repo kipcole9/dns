@@ -232,7 +232,17 @@ defmodule ExDns.DNSSEC.KeyStore do
   @spec clear() :: :ok
   def clear do
     init()
-    :ets.delete_all_objects(@table)
+    # Same teardown race as `ExDns.Recursor.Cache.clear/0`: in
+    # tests an integration test may have stopped the application
+    # between `init/0`'s whereis check and `delete_all_objects`,
+    # leaving the named-table reference stale. Swallow the
+    # ArgumentError defensively — `clear/0` is best-effort.
+    try do
+      :ets.delete_all_objects(@table)
+    rescue
+      ArgumentError -> :ok
+    end
+
     :ok
   end
 

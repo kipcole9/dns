@@ -47,7 +47,11 @@ defmodule ExDns.Resolver.Worker do
             )
 
           raw_response = resolver.resolve(request)
-          response = ExDns.Cookies.PostProcess.process(query, raw_response, address)
+
+          response =
+            raw_response
+            |> then(&ExDns.Cookies.PostProcess.process(query, &1, address))
+            |> then(&ExDns.EDNSClientSubnet.PostProcess.process(query, &1))
           budget = udp_budget(query)
 
           # RRL: ask whether this response is allowed out, may be

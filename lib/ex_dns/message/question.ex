@@ -48,10 +48,22 @@ defmodule ExDns.Message.Question do
     {:ok, nil, message}
   end
 
+  # Multi-question messages are spec-allowed but exceedingly rare;
+  # treat anything we can't shape as a single question as an error
+  # rather than crashing.
+  def decode(%Message.Header{}, _message) do
+    {:error, :unsupported_question_count}
+  end
+
   defp decode_question(message) do
-    {:ok, name, rest} = Message.decode_name(message)
-    question = %Message.Question{host: name}
-    decode_question(question, rest)
+    case Message.decode_name(message) do
+      {:ok, name, rest} ->
+        question = %Message.Question{host: name}
+        decode_question(question, rest)
+
+      {:error, _} = err ->
+        err
+    end
   end
 
   # End of message
@@ -80,6 +92,11 @@ defmodule ExDns.Message.Question do
     }
 
     {:ok, question, rest}
+  end
+
+  # Truncated input — the bytes ended before the QTYPE/QCLASS pair.
+  defp decode_question(%Message.Question{}, _truncated) do
+    {:error, :truncated}
   end
 
   # The QU bit (RFC 6762 §5.4) is the top bit of the 16-bit QCLASS in

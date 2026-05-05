@@ -53,7 +53,7 @@ defmodule ExDns.Message.RR do
 
   """
   @spec decode_records(non_neg_integer(), binary(), binary()) ::
-          {:ok, [struct()], binary()}
+          {:ok, [struct()], binary()} | {:error, term()}
 
   def decode_records(0, binary, _message), do: {:ok, [], binary}
 
@@ -66,26 +66,51 @@ defmodule ExDns.Message.RR do
   end
 
   defp decode_records(count, binary, message, acc) do
-    {:ok, record, rest} = decode_one(binary, message)
-    decode_records(count - 1, rest, message, [record | acc])
+    case decode_one(binary, message) do
+      {:ok, record, rest} -> decode_records(count - 1, rest, message, [record | acc])
+      {:error, _} = err -> err
+    end
   end
 
   @doc """
   Decodes a single resource record, dispatching its RDATA through the
   per-type module registered in `ExDns.Resource.module_for/1`.
 
-  Returns `{:ok, record, rest}`.
+  ### Returns
+
+  * `{:ok, record, rest}` — successfully parsed.
+
+  * `{:error, :truncated}` — the input bytes ended before the
+    fixed RR header could be parsed. Returned in place of a
+    crashy `MatchError` so a malformed inbound packet doesn't
+    take down the worker.
+
+  * `{:error, :invalid_name}` — the name field could not be
+    decoded.
   """
-  @spec decode_one(binary(), binary()) :: {:ok, struct(), binary()}
+  @spec decode_one(binary(), binary()) ::
+          {:ok, struct(), binary()} | {:error, :truncated | :invalid_name}
 
   def decode_one(binary, message) do
-    {:ok, name, after_name} = Message.decode_name(binary, message)
+    case Message.decode_name(binary, message) do
+      {:ok, name, after_name} ->
+        decode_one_body(name, after_name, message)
 
-    <<type_int::size(16), class_int::size(16), ttl::size(32), rdlength::size(16),
-      rdata::binary-size(rdlength), rest::binary>> = after_name
+      {:error, _} = err ->
+        err
+    end
+  end
 
-    record = decode_record_body(type_int, name, class_int, ttl, rdlength, rdata, message)
-    {:ok, record, rest}
+  defp decode_one_body(name, after_name, message) do
+    case after_name do
+      <<type_int::size(16), class_int::size(16), ttl::size(32), rdlength::size(16),
+        rdata::binary-size(rdlength), rest::binary>> ->
+        record = decode_record_body(type_int, name, class_int, ttl, rdlength, rdata, message)
+        {:ok, record, rest}
+
+      _ ->
+        {:error, :truncated}
+    end
   end
 
   # OPT pseudo-RR (EDNS0): the CLASS field is repurposed as the

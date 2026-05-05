@@ -279,6 +279,8 @@ defmodule ExDns.Resource do
   def decode_type(47), do: :nsec
   def decode_type(48), do: :dnskey
   def decode_type(50), do: :nsec3
+  def decode_type(59), do: :cds
+  def decode_type(60), do: :cdnskey
   def decode_type(64), do: :svcb
   def decode_type(65), do: :https
   def decode_type(99), do: :spf
@@ -363,6 +365,8 @@ defmodule ExDns.Resource do
   def type_from(:nsec), do: 47
   def type_from(:dnskey), do: 48
   def type_from(:nsec3), do: 50
+  def type_from(:cds), do: 59
+  def type_from(:cdnskey), do: 60
   def type_from(:svcb), do: 64
   def type_from(:https), do: 65
   def type_from(:spf), do: 99
@@ -425,6 +429,8 @@ defmodule ExDns.Resource do
   def module_for(:rrsig), do: ExDns.Resource.RRSIG
   def module_for(:nsec), do: ExDns.Resource.NSEC
   def module_for(:nsec3), do: ExDns.Resource.NSEC3
+  def module_for(:cds), do: ExDns.Resource.CDS
+  def module_for(:cdnskey), do: ExDns.Resource.CDNSKEY
   def module_for(:svcb), do: ExDns.Resource.SVCB
   def module_for(:https), do: ExDns.Resource.HTTPS
   # OPT (EDNS0) is intentionally NOT registered yet — the OPT module is

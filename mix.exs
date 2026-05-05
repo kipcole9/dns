@@ -41,10 +41,26 @@ defmodule ExDns.Mixfile do
       {:telemetry, "~> 1.3"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_metrics_prometheus, "~> 1.1"},
+      {:opentelemetry_api, "~> 1.4", optional: true},
       {:ex_doc, "~> 0.34", only: [:dev], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
-    ]
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:stream_data, "~> 1.1", only: [:dev, :test], runtime: false},
+      {:benchee, "~> 1.3", only: :bench, runtime: false}
+    ] ++ maybe_json_polyfill()
+  end
+
+  # OTP 27 ships a built-in `:json` module. On older OTPs we
+  # depend on `:json_polyfill`, which provides a compatible API
+  # backed by Jason. Detection happens at compile time of mix.exs
+  # itself, so the build produces the right dep graph for the host
+  # OTP.
+  defp maybe_json_polyfill do
+    if Code.ensure_loaded?(:json) do
+      []
+    else
+      [{:json_polyfill, "~> 0.2 or ~> 1.0"}]
+    end
   end
 
   defp elixirc_paths(:test), do: ["lib", "mix", "test", "test/support"]

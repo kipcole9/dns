@@ -46,6 +46,7 @@ defmodule ExDns.Application do
         metrics_children() ++
         dnstap_children() ++
         health_children() ++
+        admin_children() ++
         secondary_zone_children()
 
     opts = [strategy: :one_for_one, name: ExDns.Supervisor]
@@ -54,6 +55,7 @@ defmodule ExDns.Application do
       {:ok, _pid} = ok ->
         autoload_zones()
         attach_optional_telemetry_handlers()
+        ExDns.SystemD.notify_ready()
         ok
 
       other ->
@@ -69,6 +71,16 @@ defmodule ExDns.Application do
       options when is_list(options) ->
         if Keyword.get(options, :enabled, false) do
           _ = ExDns.Telemetry.StructuredLogger.attach()
+        end
+
+      _ ->
+        :ok
+    end
+
+    case Application.get_env(:ex_dns, :open_telemetry) do
+      options when is_list(options) ->
+        if Keyword.get(options, :enabled, false) do
+          _ = ExDns.Telemetry.OpenTelemetry.attach()
         end
 
       _ ->
@@ -143,6 +155,38 @@ defmodule ExDns.Application do
       port: ExDns.listener_port(),
       socket_options: socket_options()
     }
+  end
+
+  # Returns a Bandit listener serving the operator admin API
+  # (zone reload, secondary state inspection, etc.) when
+  # `:ex_dns, :admin, [enabled: true, port: ...]` is configured.
+  # Defaults to binding 127.0.0.1 — the API exposes operational
+  # control and should not be reachable from arbitrary networks
+  # without a TLS proxy.
+  defp admin_children do
+    case Application.get_env(:ex_dns, :admin) do
+      nil ->
+        []
+
+      options when is_list(options) ->
+        if Keyword.get(options, :enabled, false) do
+          port = Keyword.get(options, :port, 9570)
+          ip = Keyword.get(options, :bind, {127, 0, 0, 1})
+
+          [
+            Supervisor.child_spec(
+              {Bandit,
+               plug: ExDns.Admin,
+               scheme: :http,
+               port: port,
+               thousand_island_options: [transport_options: [ip: ip]]},
+              id: ExDns.Admin
+            )
+          ]
+        else
+          []
+        end
+    end
   end
 
   # Returns a Bandit listener serving the /healthz + /readyz probes
