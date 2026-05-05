@@ -27,24 +27,24 @@ defmodule ExDns.Application do
     # before any subsystem reads its settings.
     ExDns.Config.load_if_configured()
 
-    # The configured storage backend is initialised eagerly so that any
-    # zones configured for autoload below can be inserted as the
-    # supervision tree comes up.
-    ExDns.Storage.init()
+    # `ExDns.Storage.init/0` is called *after* `Supervisor.start_link/2`
+    # below — the EKV-backed default storage backend reads from EKV
+    # during init, so EKV must already be running.
     ExDns.API.MetricsCounters.init()
 
     port = ExDns.listener_port()
 
     children =
-      [
-        {ExDns.Listener.UDP, listener_options(:inet)},
-        Supervisor.child_spec({ExDns.Listener.UDP, listener_options(:inet6)},
-          id: ExDns.Listener.UDP6
-        ),
-        {ExDns.Listener.TCP,
-         port: port, transport_options: [ip: {127, 0, 0, 1}, reuseaddr: true]},
-        ExDns.Resolver.Supervisor
-      ] ++
+      ekv_children() ++
+        [
+          {ExDns.Listener.UDP, listener_options(:inet)},
+          Supervisor.child_spec({ExDns.Listener.UDP, listener_options(:inet6)},
+            id: ExDns.Listener.UDP6
+          ),
+          {ExDns.Listener.TCP,
+           port: port, transport_options: [ip: {127, 0, 0, 1}, reuseaddr: true]},
+          ExDns.Resolver.Supervisor
+        ] ++
         doh_children() ++
         dot_children() ++
         mdns_children() ++
@@ -63,6 +63,9 @@ defmodule ExDns.Application do
 
     case Supervisor.start_link(children, opts) do
       {:ok, _pid} = ok ->
+        # EKV (when present) is now running, so the configured storage
+        # backend can safely hydrate from it.
+        ExDns.Storage.init()
         autoload_zones()
         replay_zone_snapshot()
         register_configured_plugins()
@@ -242,6 +245,17 @@ defmodule ExDns.Application do
 
       _ ->
         []
+    end
+  end
+
+  # EKV is the cluster substrate: when enabled (the default)
+  # it boots before every other subsystem so storage adapters
+  # can read/write through it from `init/0` onward.
+  defp ekv_children do
+    if ExDns.EKV.enabled?() do
+      [ExDns.EKV]
+    else
+      []
     end
   end
 

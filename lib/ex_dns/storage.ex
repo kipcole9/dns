@@ -2,15 +2,22 @@ defmodule ExDns.Storage do
   @moduledoc """
   Behaviour describing a zone-storage backend.
 
-  One backend ships today:
+  Two backends ship today:
 
-  * `ExDns.Storage.ETS` — single-node, in-memory. Default.
+  * `ExDns.Storage.EKV` (default) — ETS hot-path cache for
+    reads, EKV write-through for durability and cluster
+    propagation. Same code path single-node and clustered.
 
-  A clustered backend (Khepri) is the planned next step — see
-  `plans/2026-05-02-storage-alternatives.md` for the rationale.
+  * `ExDns.Storage.ETS` — pure in-memory ETS. Use when you
+    want strictly per-node state with no persistence (most
+    test runs, ephemeral environments).
 
   Configure the active backend with:
 
+      # default — no config needed
+      # config :ex_dns, storage: ExDns.Storage.EKV
+
+      # or pin to in-memory only
       config :ex_dns, storage: ExDns.Storage.ETS
 
   All ExDns code reaches the backend via this module's wrapper
@@ -39,7 +46,7 @@ defmodule ExDns.Storage do
               {:ok, apex, qname, [rr]} | :no_delegation
   @callback dump_zone(apex) :: {:ok, [rr]} | {:error, :not_loaded}
 
-  @default_backend ExDns.Storage.ETS
+  @default_backend ExDns.Storage.EKV
 
   @doc "Returns the configured storage backend module."
   @spec backend() :: module()

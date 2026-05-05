@@ -1,6 +1,6 @@
 defmodule ExDns.DNSSEC.KeyStore do
   @moduledoc """
-  In-process registry of per-zone DNSSEC keys with rollover state.
+  Per-zone registry of DNSSEC signing keys with rollover state.
 
   Each entry holds:
 
@@ -10,6 +10,17 @@ defmodule ExDns.DNSSEC.KeyStore do
     `:crypto.sign/4` expects for the algorithm). May be `nil` for
     keys we want to publish for verification but not sign with.
   * `:state` — one of `:incoming`, `:active`, `:retired`. See below.
+
+  ## Storage backend
+
+  State lives behind `ExDns.DNSSEC.KeyStore.Backend`. The default
+  is `ExDns.DNSSEC.KeyStore.Backend.EKV`, so installed keys
+  replicate to every node in the cluster — the same code path
+  works single-node and clustered. Operators preferring a
+  per-node store can switch:
+
+      config :ex_dns, :dnssec_key_store,
+        backend: ExDns.DNSSEC.KeyStore.Backend.ETS
 
   ## Rollover lifecycle (RFC 7583)
 
@@ -35,12 +46,17 @@ defmodule ExDns.DNSSEC.KeyStore do
   Time-based transitions (waiting for cached records to expire) are
   the operator's job; this module only tracks the labels.
 
-  ## Configuration
+  ## Bootstrap configuration
 
       config :ex_dns,
         dnssec_keys: [
           %{zone: "example.com", dnskey: …, private_key: …, state: :active}
         ]
+
+  Config-declared keys are loaded into the backend on first
+  access. They are written through to the backend like any
+  other key (so they propagate cluster-wide when the EKV
+  backend is in use).
 
   Or programmatically:
 
@@ -56,10 +72,11 @@ defmodule ExDns.DNSSEC.KeyStore do
 
   """
 
+  alias ExDns.DNSSEC.KeyStore.Backend
   alias ExDns.DNSSEC.Validator
   alias ExDns.Resource.DNSKEY
 
-  @table :ex_dns_dnssec_keys
+  @bootstrap_flag {__MODULE__, :app_env_loaded?}
 
   @type state :: :incoming | :active | :retired
 
@@ -70,28 +87,28 @@ defmodule ExDns.DNSSEC.KeyStore do
           state: state()
         }
 
-  @doc "Initialises the registry. Idempotent."
+  @doc "Initialises the configured backend and loads any config-declared keys. Idempotent."
   @spec init() :: :ok
   def init do
-    case :ets.whereis(@table) do
-      :undefined ->
-        :ets.new(@table, [:bag, :public, :named_table, read_concurrency: true])
-        load_app_env()
-        :ok
-
-      _ ->
-        :ok
-    end
+    Backend.configured().init()
+    maybe_load_app_env()
+    :ok
   end
 
-  defp load_app_env do
-    Enum.each(Application.get_env(:ex_dns, :dnssec_keys, []), fn entry ->
-      put_key(entry.zone,
-        dnskey: entry.dnskey,
-        private_key: entry.private_key,
-        state: Map.get(entry, :state, :active)
-      )
-    end)
+  defp maybe_load_app_env do
+    if :persistent_term.get(@bootstrap_flag, false) do
+      :ok
+    else
+      :persistent_term.put(@bootstrap_flag, true)
+
+      Enum.each(Application.get_env(:ex_dns, :dnssec_keys, []), fn entry ->
+        put_key(entry.zone,
+          dnskey: entry.dnskey,
+          private_key: entry.private_key,
+          state: Map.get(entry, :state, :active)
+        )
+      end)
+    end
   end
 
   @doc """
@@ -108,14 +125,26 @@ defmodule ExDns.DNSSEC.KeyStore do
   """
   @spec put_key(binary(), keyword()) :: :ok
   def put_key(zone, options) when is_binary(zone) do
-    init()
+    Backend.configured().init()
+
     dnskey = Keyword.fetch!(options, :dnskey)
     private_key = Keyword.fetch!(options, :private_key)
     state = Keyword.get(options, :state, :active)
 
-    entry = %{dnskey: dnskey, private_key: private_key, state: state}
-    :ets.insert(@table, {normalize(zone), entry})
-    :ok
+    new_entry = %{dnskey: dnskey, private_key: private_key, state: state}
+    new_tag = Validator.key_tag(dnskey)
+
+    apex = normalize(zone)
+    backend = Backend.configured()
+
+    existing = backend.list(apex)
+
+    updated =
+      Enum.reject(existing, fn entry ->
+        Validator.key_tag(entry.dnskey) == new_tag
+      end) ++ [new_entry]
+
+    backend.put_list(apex, updated)
   end
 
   @doc "Adds a key in the `:incoming` state (pre-publication phase)."
@@ -148,13 +177,20 @@ defmodule ExDns.DNSSEC.KeyStore do
   def remove_key(zone, key_tag) when is_binary(zone) and is_integer(key_tag) do
     init()
     apex = normalize(zone)
+    backend = Backend.configured()
+    entries = backend.list(apex)
 
-    case find_entry(apex, key_tag) do
-      nil ->
+    {matching, remaining} =
+      Enum.split_with(entries, fn entry ->
+        Validator.key_tag(entry.dnskey) == key_tag
+      end)
+
+    case matching do
+      [] ->
         {:error, :not_found}
 
-      entry ->
-        :ets.delete_object(@table, {apex, entry})
+      _ ->
+        backend.put_list(apex, remaining)
         :ok
     end
   end
@@ -162,39 +198,40 @@ defmodule ExDns.DNSSEC.KeyStore do
   defp update_state(zone, key_tag, new_state) do
     init()
     apex = normalize(zone)
+    backend = Backend.configured()
+    entries = backend.list(apex)
 
-    case find_entry(apex, key_tag) do
+    case Enum.find_index(entries, fn entry ->
+           Validator.key_tag(entry.dnskey) == key_tag
+         end) do
       nil ->
         {:error, :not_found}
 
-      entry ->
-        :ets.delete_object(@table, {apex, entry})
-        :ets.insert(@table, {apex, %{entry | state: new_state}})
+      index ->
+        updated =
+          List.update_at(entries, index, fn entry -> %{entry | state: new_state} end)
+
+        backend.put_list(apex, updated)
         :ok
     end
-  end
-
-  defp find_entry(apex, key_tag) do
-    Enum.find_value(:ets.lookup(@table, apex), fn {_zone, entry} ->
-      if Validator.key_tag(entry.dnskey) == key_tag, do: entry
-    end)
   end
 
   @doc "Removes every key for `zone`."
   @spec delete_zone(binary()) :: :ok
   def delete_zone(zone) when is_binary(zone) do
     init()
-    :ets.delete(@table, normalize(zone))
-    :ok
+    Backend.configured().delete_zone(normalize(zone))
   end
 
   @doc "Returns every key registered for `zone` (any state)."
   @spec keys_for_zone(binary()) :: [entry()]
   def keys_for_zone(zone) when is_binary(zone) do
     init()
+    apex = normalize(zone)
 
-    :ets.lookup(@table, normalize(zone))
-    |> Enum.map(fn {z, e} -> Map.put(e, :zone, z) end)
+    apex
+    |> Backend.configured().list()
+    |> Enum.map(&Map.put(&1, :zone, apex))
   end
 
   @doc """
@@ -231,18 +268,9 @@ defmodule ExDns.DNSSEC.KeyStore do
   @doc "Removes every key from the store."
   @spec clear() :: :ok
   def clear do
-    init()
-    # Same teardown race as `ExDns.Recursor.Cache.clear/0`: in
-    # tests an integration test may have stopped the application
-    # between `init/0`'s whereis check and `delete_all_objects`,
-    # leaving the named-table reference stale. Swallow the
-    # ArgumentError defensively — `clear/0` is best-effort.
-    try do
-      :ets.delete_all_objects(@table)
-    rescue
-      ArgumentError -> :ok
-    end
-
+    Backend.configured().init()
+    Backend.configured().clear()
+    :persistent_term.erase(@bootstrap_flag)
     :ok
   end
 

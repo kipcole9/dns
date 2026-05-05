@@ -5,10 +5,16 @@ defmodule ExDns.BlackHole.Storage do
   ## Why a behaviour
 
   BlackHole's state — blocklists, allowlist, denylist, groups,
-  query log — is single-node by default but should swap to a
-  clustered backend (Postgres / Khepri) without changing the
-  plugin's logic. The default adapter is
-  `ExDns.BlackHole.Storage.SQLite`.
+  query log — has two viable storage stories:
+
+  * `ExDns.BlackHole.Storage.EKV` (default) — replicates
+    cluster-wide via the shared EKV instance. Same code path
+    works single-node and clustered.
+
+  * `ExDns.BlackHole.Storage.SQLite` — single-file SQLite via
+    `exqlite`. Better fit for very high-rate query log
+    ingestion or single-node deployments that want a
+    portable on-disk file.
 
   ## Public API
 
@@ -17,6 +23,13 @@ defmodule ExDns.BlackHole.Storage do
   configured adapter.
 
   ## Configuration
+
+  Use the EKV backend (default — no config needed):
+
+      # implicit
+      # config :ex_dns, :black_hole, []
+
+  Or pin SQLite explicitly:
 
       config :ex_dns, :black_hole,
         storage:
@@ -94,8 +107,7 @@ defmodule ExDns.BlackHole.Storage do
   end
 
   defp default_backend do
-    {ExDns.BlackHole.Storage.SQLite,
-     [path: Path.join(System.tmp_dir!(), "ex_dns_black_hole.sqlite")]}
+    {ExDns.BlackHole.Storage.EKV, []}
   end
 
   # ----- delegations ------------------------------------------------

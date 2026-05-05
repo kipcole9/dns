@@ -54,16 +54,21 @@ defmodule ExDns.Plugin.Registry.Backend do
 
   @doc """
   Returns the configured backend module. Default is
-  `ExDns.Plugin.Registry.Backend.PersistentTerm`.
+  `ExDns.Plugin.Registry.Backend.EKV` — the same code path
+  works single-node and clustered, so the operator
+  lifecycle (single box → multi-node) doesn't require a
+  config change.
 
   Override via:
 
+      # Stay process-local; faster reads on the hot path
+      # but no cross-node propagation.
       config :ex_dns, :plugin_registry,
-        backend: MyApp.Plugin.Registry.Backend.SomeOtherImpl
+        backend: ExDns.Plugin.Registry.Backend.PersistentTerm
   """
   @spec configured() :: module()
   def configured do
     Application.get_env(:ex_dns, :plugin_registry, [])
-    |> Keyword.get(:backend, ExDns.Plugin.Registry.Backend.PersistentTerm)
+    |> Keyword.get(:backend, ExDns.Plugin.Registry.Backend.EKV)
   end
 end

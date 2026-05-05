@@ -4,6 +4,15 @@ All notable changes to ExDns. Newest first.
 
 ## Unreleased
 
+### Added — clustering substrate
+
+* `ExDns.EKV` — single shared instance of the [EKV](https://hex.pm/packages/ekv) embedded KV store. Identical API single-node and clustered, namespaced by key prefix (`plugin/...`, `tsig/...`, `dnssec/...`, `blackhole/...`, `zone/...`).
+* `ExDns.Plugin.Registry.Backend.EKV` — default cluster-replicated plugin registry. Override with `config :ex_dns, :plugin_registry, backend: ExDns.Plugin.Registry.Backend.PersistentTerm` for a per-node registry.
+* `ExDns.TSIG.Keyring.Backend` behaviour with `Backend.EKV` (default) and `Backend.ETS` adapters. Runtime-installed TSIG keys now propagate cluster-wide.
+* `ExDns.DNSSEC.KeyStore.Backend` behaviour with `Backend.EKV` (default) and `Backend.ETS` adapters. DNSSEC signing keys (incoming/active/retired states) replicate across nodes.
+* `ExDns.BlackHole.Storage.EKV` — default cluster-replicated BlackHole storage (blocklists / allow / deny / groups / query log). SQLite remains available for high-rate query log workloads.
+* `ExDns.Storage.EKV` — default zone storage with an ETS hot-path read cache and EKV write-through for durability and cluster propagation.
+
 ### Added — DNS protocol
 
 * `ExDns.NSID` (RFC 5001) — server identification via the OPT NSID option, attached to responses when the client asks. Configured via `:ex_dns, :nsid, [enabled:, identifier:]`.

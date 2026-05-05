@@ -29,9 +29,23 @@ config :ex_dns, :nsid,
 
 config :ex_dns, refuse_any: true
 
+# ----- EKV (clustering substrate) ----------------------------
+# Embedded KV store backing zone storage, plugin registry,
+# TSIG keyring, DNSSEC keys, and BlackHole storage. Identical
+# API single-node and clustered — raise `:cluster_size` to
+# scale out without a config or schema change.
+
+config :ex_dns, :ekv,
+  enabled: true,
+  data_dir: "/var/lib/exdns/ekv",
+  cluster_size: 1,
+  mode: :member
+
 # ----- Persistent zone snapshot ------------------------------
 # Runtime mutations (RFC 2136 UPDATE, AXFR, catalog applies)
-# write to memory + this snapshot file. Replayed on next boot.
+# write to memory + EKV + this snapshot file. The snapshot is
+# a belt-and-braces backup; EKV's on-disk store already
+# survives restart on its own.
 
 config :ex_dns, :zone_snapshot,
   enabled: true,
@@ -83,12 +97,16 @@ config :ex_dns,
 # Off unless you want it. Pulls subscribed adlists into a
 # compiled match set and intercepts queries from the CIDRs
 # declared in the groups table (managed via the UI).
+#
+# `:storage` defaults to `ExDns.BlackHole.Storage.EKV` —
+# cluster-replicated. Pin to SQLite when query log volume is
+# high enough that per-row EKV writes become wasteful.
 
 config :ex_dns, :black_hole,
   enabled: true,
-  storage:
-    {ExDns.BlackHole.Storage.SQLite,
-     [path: "/var/lib/exdns/black_hole.sqlite"]},
+  # storage:
+  #   {ExDns.BlackHole.Storage.SQLite,
+  #    [path: "/var/lib/exdns/black_hole.sqlite"]},
   default_block_response: :nxdomain,
   query_log_capacity: 100_000,
   query_log_max_age_seconds: 604_800,

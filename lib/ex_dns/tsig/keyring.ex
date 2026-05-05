@@ -2,50 +2,46 @@ defmodule ExDns.TSIG.Keyring do
   @moduledoc """
   Lookup table for TSIG shared secrets, keyed by key name.
 
-  Keys live under `Application.get_env(:ex_dns, :tsig_keys, %{...})`
-  as a map shaped:
+  Two sources of keys, consulted in order:
 
-      %{
-        "transfer.example." => %{
-          algorithm: "hmac-sha256.",
-          secret: <<…raw bytes…>>
-        },
-        "ddns.example." => %{
-          algorithm: "hmac-sha256.",
-          # Secrets in config files are typically base64-encoded; the
-          # accessor decodes them transparently.
-          secret_base64: "MGZmMzNjY2RkY2NkY2NkZGNjY2RkY2NkY2RjZA=="
-        }
-      }
+  1. **Runtime store** — backed by
+     `ExDns.TSIG.Keyring.Backend.configured/0`. Defaults to
+     `ExDns.TSIG.Keyring.Backend.EKV`, so keys installed via
+     `put/3` propagate across the cluster. Switch to
+     `ExDns.TSIG.Keyring.Backend.ETS` for a process-local
+     store with no cross-node propagation:
 
-  Tests and runtime code can also call `put/3` to install a key
-  programmatically.
+         config :ex_dns, :tsig_keyring,
+           backend: ExDns.TSIG.Keyring.Backend.ETS
+
+  2. **Static configuration** — keys declared under
+     `Application.get_env(:ex_dns, :tsig_keys, %{...})` as a
+     map shaped:
+
+         %{
+           "transfer.example." => %{
+             algorithm: "hmac-sha256.",
+             secret: <<…raw bytes…>>
+           },
+           "ddns.example." => %{
+             algorithm: "hmac-sha256.",
+             # Secrets in config files are typically base64-encoded; the
+             # accessor decodes them transparently.
+             secret_base64: "MGZmMzNjY2RkY2NkY2NkZGNjY2RkY2NkY2RjZA=="
+           }
+         }
 
   Key names are compared case-insensitively per RFC 8945 §6
   (canonical owner names).
 
   """
 
-  @table :ex_dns_tsig_keys
+  alias ExDns.TSIG.Keyring.Backend
 
-  @doc "Initialises the in-process keyring table. Idempotent."
+  @doc "Initialises the configured runtime backend. Idempotent."
   @spec init() :: :ok
   def init do
-    case :ets.whereis(@table) do
-      :undefined ->
-        :ets.new(@table, [
-          :set,
-          :public,
-          :named_table,
-          read_concurrency: true,
-          write_concurrency: true
-        ])
-
-        :ok
-
-      _ ->
-        :ok
-    end
+    Backend.configured().init()
   end
 
   @doc """
@@ -55,6 +51,7 @@ defmodule ExDns.TSIG.Keyring do
 
   * `{:ok, %{algorithm: name, secret: binary}}` when the key is configured.
   * `:error` otherwise.
+
   """
   @spec lookup(binary()) ::
           {:ok, %{algorithm: binary(), secret: binary()}} | :error
@@ -62,9 +59,9 @@ defmodule ExDns.TSIG.Keyring do
     init()
     key = normalize(name)
 
-    case :ets.lookup(@table, key) do
-      [{^key, value}] -> {:ok, value}
-      [] -> lookup_app_env(key)
+    case Backend.configured().lookup(key) do
+      {:ok, entry} -> {:ok, entry}
+      :error -> lookup_app_env(key)
     end
   end
 
@@ -94,26 +91,29 @@ defmodule ExDns.TSIG.Keyring do
   registrations.
   """
   @spec put(binary(), binary(), binary()) :: :ok
-  def put(name, algorithm, secret) when is_binary(name) and is_binary(secret) do
+  def put(name, algorithm, secret)
+      when is_binary(name) and is_binary(algorithm) and is_binary(secret) do
     init()
-    :ets.insert(@table, {normalize(name), %{algorithm: algorithm, secret: secret}})
-    :ok
+
+    Backend.configured().put(
+      normalize(name),
+      %{algorithm: algorithm, secret: secret}
+    )
   end
 
-  @doc "Removes a previously-installed key."
+  @doc "Removes a previously-installed key from the runtime store."
   @spec delete(binary()) :: :ok
   def delete(name) when is_binary(name) do
     init()
-    :ets.delete(@table, normalize(name))
-    :ok
+    Backend.configured().delete(normalize(name))
   end
 
-  @doc "Returns every key currently in the table (programmatic + config)."
+  @doc "Returns every key currently visible (runtime store + static config)."
   @spec all() :: [{binary(), %{algorithm: binary(), secret: binary()}}]
   def all do
     init()
 
-    runtime = :ets.tab2list(@table)
+    runtime = Backend.configured().all()
 
     config =
       Application.get_env(:ex_dns, :tsig_keys, %{})
