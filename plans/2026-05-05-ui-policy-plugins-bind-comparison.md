@@ -88,38 +88,134 @@ Where we should **diverge** from Cloudflare:
   + partisan), so the top-of-page banner shows which nodes are
   up + which is the update master.
 
-### Architecture
+### Architecture — UI is a *client* of the DNS server
 
-Adopt the `image_playground` pattern — a sibling Phoenix umbrella
-app that depends on `:ex_dns` and runs in the same BEAM:
+**Hard requirement (decided 2026-05-05):** The web UI is a
+**separate, independently runnable application** that talks to
+the DNS server only over a well-specified, versioned HTTP API.
+The UI must be able to:
+
+* run on a different machine, in a different container, in a
+  different release, on a different deploy cadence;
+* run against a remote DNS server it has no compile-time
+  dependency on;
+* run against multiple servers (a development server today,
+  a production cluster tomorrow) without rebuilding;
+* be replaced — by a different UI, a CLI, an Ansible
+  playbook, an internal admin portal — without changing the
+  server.
+
+That rules out the original "sibling Phoenix umbrella in the
+same BEAM" plan. Instead:
 
 ```
 ~/Development/dns/
   ex_dns/                      ← existing library (unchanged)
-  ex_dns_web/                  ← new sibling app
-    lib/ex_dns_web/
-      endpoint.ex
-      router.ex
-      live/
-        zones_live.ex          ← list + pick a zone
-        zone_live.ex           ← records table for one zone
-        keys_live.ex           ← DNSSEC keys + rollover
-        secondaries_live.ex    ← secondary status board
-        observability_live.ex  ← metrics dashboards
-      components/
-        core_components.ex     ← shared inputs, buttons, icons
-        layouts.ex
-        layouts/
-          app.html.heex        ← <Layouts.app> wrapper
-        primitives/
-          stack.ex             ← every-layout.dev primitives
-          cluster.ex
-          sidebar.ex
-          box.ex
-        records_table.ex       ← the zone-records grid
-        record_row.ex          ← one editable row
-        plugin_tab.ex          ← see §5
+    priv/openapi/v1.yaml       ← FORMAL API CONTRACT (new)
+    lib/ex_dns/admin/          ← REST surface implementing the contract
+      router.ex                ← Plug.Router; existing Admin extended
+      auth.ex
+      events.ex                ← SSE stream for live updates
+
+~/Development/dns_ui/          ← SEPARATE Mix project (own repo)
+  mix.exs                      ← does NOT depend on :ex_dns
+  lib/ex_dns_ui/
+    endpoint.ex
+    router.ex
+    api_client.ex              ← typed client generated from openapi/v1.yaml
+    live/
+      zones_live.ex
+      zone_live.ex
+      keys_live.ex
+      secondaries_live.ex
+      observability_live.ex
+    components/
+      core_components.ex
+      layouts.ex
+      layouts/
+        app.html.heex          ← <Layouts.app> wrapper
+      primitives/
+        stack.ex               ← every-layout.dev primitives
+        cluster.ex
+        sidebar.ex
+        box.ex
+      records_table.ex
+      record_row.ex
+      plugin_tab.ex            ← see §5
 ```
+
+The UI app is its own release. Operators run it next to the DNS
+server, on a separate host, or behind a proxy that routes
+`/admin` → DNS server and `/` → UI. Either layout is supported
+because the API contract is the only coupling.
+
+### The formal API contract
+
+The API surface lives in **`ex_dns/priv/openapi/v1.yaml`** as an
+OpenAPI 3.1 document. It is the authoritative spec — both the
+server (`ExDns.Admin.Router`) and the UI (`ExDns.UI.ApiClient`)
+are derived from it (or checked against it in CI).
+
+* **Versioned**: every URL is prefixed `/api/v1`. Breaking
+  changes cut a new major (`/api/v2`); additive changes do not.
+* **JSON over HTTP**: responses are JSON; no XML, no protobuf
+  on this surface. (dnstap / Prometheus stay on their own
+  dedicated endpoints.)
+* **Bearer-token auth on every endpoint** — no anonymous reads.
+  The token is provisioned at server startup; the UI prompts
+  the operator for it on first connect and stores it in a
+  cookie.
+* **Live updates via Server-Sent Events** at
+  `GET /api/v1/events` — one event stream covering zone
+  reloads, secondary state changes, plugin registry changes,
+  RRL decisions, and DNSSEC key rollover stage transitions.
+  Each event has `type`, `timestamp`, and a `data` object whose
+  shape is also in the OpenAPI document.
+* **No RPC, no `:erpc`, no shared ETS** between the two apps.
+  Everything the UI does, the API can do — which means
+  everything the UI does, a `curl` user can do too.
+
+#### v1 endpoint inventory
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/v1/server` | Server identity (NSID), version, listener bindings, cluster nodes |
+| `GET` | `/api/v1/zones` | List zones with apex, serial, source path, kind (primary/secondary/catalog) |
+| `GET` | `/api/v1/zones/:apex` | Zone metadata + counts by record type |
+| `GET` | `/api/v1/zones/:apex/records` | Paginated record listing with type/name filters |
+| `POST` | `/api/v1/zones/:apex/records` | Add records (atomic; bumps SOA serial) |
+| `PATCH` | `/api/v1/zones/:apex/records/:id` | Edit one record |
+| `DELETE` | `/api/v1/zones/:apex/records/:id` | Delete one record |
+| `POST` | `/api/v1/zones/:apex/reload` | Re-read zone file from disk |
+| `GET` | `/api/v1/zones/:apex/journal` | Paginated journal of `{added, removed}` per serial bump |
+| `POST` | `/api/v1/zones/:apex/notify` | Trigger refresh (secondaries only) |
+| `GET` | `/api/v1/secondaries/:apex` | Secondary state machine snapshot |
+| `GET` | `/api/v1/keys` | DNSSEC key inventory (per zone, per role, state) |
+| `POST` | `/api/v1/keys/:id/rollover/:phase` | Advance rollover state (prepare/active/retire/purge) |
+| `GET` | `/api/v1/plugins` | Plugin registry — slug, node, version, healthy?, UI metadata |
+| `POST` | `/api/v1/plugins/:slug/disable` | Disable a registered plugin |
+| `POST` | `/api/v1/plugins/:slug/enable` | Re-enable a disabled plugin |
+| `GET` | `/api/v1/metrics/summary` | Time-bucketed query rate, RRL drops, cache hit ratio, validation outcomes |
+| `GET` | `/api/v1/events` | Server-Sent Events stream (live updates) |
+| `GET` | `/api/v1/health` | Liveness probe (proxies `ExDns.Health`) |
+| `GET` | `/api/v1/ready` | Readiness probe |
+
+Existing `/admin/*` routes from `ExDns.Admin` move under
+`/api/v1/...` as part of the contract bring-up; legacy paths
+get a deprecation warning header for one minor version, then
+are removed.
+
+#### CI guarantees
+
+* `mix exdns.openapi.check` runs on every PR — fails if the
+  router's actual surface drifts from `priv/openapi/v1.yaml`.
+* `mix exdns.openapi.client` regenerates the typed client used
+  by `ex_dns_ui` from the spec; the regenerated file is
+  committed and CI fails if it would change.
+* The contract is the source of truth; both server and UI are
+  downstream of it.
+
+### UI tech stack
 
 Phoenix v1.8 + LiveView. Tailwind v4 (no `tailwind.config.js`).
 No daisyUI — handcrafted components per the project standard.
@@ -210,26 +306,57 @@ Five top-level routes, all LiveView:
 
 ### Authn / authz
 
-Out of scope for v1 — UI binds to `127.0.0.1` and ops put it
-behind a TLS-terminating proxy that handles auth (Cloudflare
-Access, Tailscale, Pomerium). Document the recommended setup
-in the README.
+Authentication is **mandatory** in the client/server split —
+the API is no longer same-process. Two layers:
 
-v2 adds first-class auth: `mix phx.gen.auth` baseline, then
-RBAC where roles are `viewer / zone_admin / cluster_admin`,
-scoped per-zone-glob.
+1. **Server-side auth on the API.** The `/api/v1/*` surface
+   requires `Authorization: Bearer <token>` on every request.
+   Tokens are provisioned via `mix exdns.token.issue --role
+   <role> --scopes <zone-globs>`, written to a server-local
+   keystore. Roles are `viewer / zone_admin / cluster_admin`,
+   scoped per-zone-glob. The server enforces the role at the
+   route handler — the UI never sees a token it isn't allowed
+   to act on.
+
+2. **UI-side session.** The UI app prompts for the bearer
+   token on first connect, stores it in an HttpOnly cookie,
+   and attaches it to every API call. The UI itself does not
+   maintain user accounts in v1; it is a thin "remote control"
+   for tokens issued by the server.
+
+For zero-trust networks, the UI app sits behind a TLS proxy
+(Cloudflare Access, Tailscale, Pomerium) that handles human
+auth — the bearer token then carries the *role*, not the
+identity. v2 adds first-class user accounts in the UI with
+`mix phx.gen.auth`, mapping users to one or more server tokens.
+
+The DNS server's `:ex_dns, :admin, [bind: ...]` setting
+controls where the API listens. Localhost-only is the default;
+operators who run the UI on a different host must explicitly
+open the API to that host's IP.
 
 ### Phasing
 
-* **Phase 1 — read-only**: ZonesLive + ZoneLive in display-only
-  mode. SecondariesLive. Observability dashboards. No mutation.
-  Ship behind `:web, [enabled: true, port: 9571]` config flag.
-* **Phase 2 — record edits**: inline edit, add, delete on the
-  records table. Goes through `Storage.put_zone/2` so
-  journal + outbound NOTIFY fire automatically.
-* **Phase 3 — DNSSEC + secondaries**: KeysLive with the
-  rollover wizard, force-AXFR button on SecondariesLive.
-* **Phase 4 — plugins**: §5 wiring.
+* **Phase 0 — API surface.** Cut `priv/openapi/v1.yaml`,
+  implement read-only routes (`/server`, `/zones`,
+  `/zones/:apex/records`, `/keys`, `/secondaries`,
+  `/metrics/summary`, `/events`, `/health`, `/ready`). Ship
+  the OpenAPI doc, the bearer-token issuer, the SSE stream.
+  No UI yet — operators can drive the API with `curl`.
+* **Phase 1 — read-only UI.** `ex_dns_ui` Mix project.
+  ZonesLive + ZoneLive in display-only mode. SecondariesLive.
+  Observability dashboards. Consumes only the v1 API.
+* **Phase 2 — record edits API + UI.** Add the mutating
+  routes (`POST/PATCH/DELETE` on records, `POST /reload`).
+  UI gets inline edit, add, delete on the records table.
+  Mutations go through the existing `Storage.put_zone/2`
+  inside the server, so journal + outbound NOTIFY fire
+  automatically.
+* **Phase 3 — DNSSEC + secondaries.** Add `/keys/*/rollover/*`
+  routes. UI's KeysLive gets the rollover wizard,
+  SecondariesLive gets the force-AXFR button.
+* **Phase 4 — plugins.** §5 wiring (revised below to fit the
+  client/server model).
 
 ---
 
@@ -727,95 +854,107 @@ end
 
 ## 5. Plugin UI tabs
 
-### Goal
+### Revised goal (consistent with §1's client/server model)
 
-A plugin running on its own node can declare a UI module + tab
-title in its `metadata/0`. The DNS server's `ex_dns_web` app
-discovers it at registration time and exposes it as a tab in
-the navigation. The plugin's LiveView code runs in the *web*
-app's BEAM; data comes from the plugin's *own* node via
-:erpc / GenServer cast.
+A plugin can expose a tab in the UI, but **without** loading
+plugin code into the UI app's BEAM and **without** the UI
+holding any direct handle to the plugin node. The UI is a pure
+client of the DNS server's API; the DNS server is a pure client
+of plugin nodes via `ExDns.Plugin.Registry`. Plugin UI tabs
+flow through that same chain:
 
-### How it works
+```
+   browser ──► ex_dns_ui ──► /api/v1/* on DNS server ──► plugin node
+                                       (HTTP + SSE)             (:erpc)
+```
 
-1. **Plugin declaration** (`ExDns.Anycast.Plugin.metadata/0`):
+### How it works (client/server-friendly)
+
+1. **Plugin declares its UI surface in metadata**:
 
    ```elixir
-   ui: %{module: ExDns.Anycast.UILive, title: "Anycast"}
+   ui: %{
+     slug: :anycast,
+     title: "Anycast",
+     # one or more API resources the plugin exposes via its
+     # registered DNS-server API extension (below).
+     resources: [:routes, :hits]
+   }
    ```
 
-2. **Plugin code path**: the LiveView module
-   (`ExDns.Anycast.UILive`) lives in the plugin's own app
-   (`ex_dns_anycast`). The plugin's release ships its compiled
-   `.beam` files in a known directory.
+   No module reference, no BEAM coupling.
 
-3. **Web app loads plugin code**: at startup, `ex_dns_web`
-   reads `:ex_dns_web, :plugin_load_paths` (a list of paths
-   to plugin release `lib/` directories) and adds them to the
-   code path. This lets the web app `Code.ensure_loaded?` the
-   LiveView modules without the web app depending on the
-   plugin at compile time.
+2. **DNS server proxies plugin data over the formal API**:
+   the registry exposes one route per plugin under
+   `/api/v1/plugins/:slug/...`. Calls into a plugin's API are
+   forwarded to that plugin's node via `:erpc` (with the
+   plugin's declared SLA). Responses are JSON, schema-checked
+   against the OpenAPI fragment the plugin contributed.
 
-4. **Discovery via the registry**:
-   `ExDns.Plugin.Registry.list/0` returns each plugin's UI
-   metadata. The web app's main layout iterates this list to
-   build the nav.
+3. **Plugin contributes an OpenAPI fragment**: each plugin
+   ships an `openapi.yaml` describing its `:resources`. At
+   registration time, the registry merges that fragment into
+   the live `/api/v1` spec under `/plugins/{slug}/...`. The
+   merged spec is what `mix exdns.openapi.check` validates.
 
-5. **Routing**: a single catch-all route `/plugins/:slug`
-   resolves the slug → registry entry → ui.module → starts
-   that module as a LiveView via `Phoenix.LiveView.Router.live`
-   dynamically.
+4. **UI discovers plugin tabs from the API**:
+   `GET /api/v1/plugins` returns each plugin's `ui` metadata.
+   The UI's nav iterates that list and builds tabs with
+   `live_path("/plugins/" <> slug)`. No code is loaded from
+   the plugin into the UI.
 
-   Phoenix v1.8 supports `live_session` with a
-   `dispatch:` function that picks the LiveView at request
-   time — that's the hook.
+5. **Tab UI is rendered by ex_dns_ui itself**: the UI ships a
+   small set of generic plugin views (table, key/value, time
+   series, log). The plugin's `ui` metadata picks which one to
+   use and binds it to its `:resources`. A plugin author writes
+   *no* LiveView code — they expose JSON, the UI renders it.
 
-6. **Cross-node data fetch**: the plugin's LiveView module
-   uses `:erpc.call(plugin_node, ExDns.Anycast.Server,
-   :snapshot, [])` to pull state from its home node. The home
-   node's GenServer owns the canonical state. The web app
-   never reaches into the plugin's storage directly.
+   v2 adds an opt-in escape hatch: a plugin may publish a
+   server-side-rendered fragment via
+   `GET /api/v1/plugins/:slug/render` that the UI embeds inside
+   the layout. The fragment is sandboxed (CSP, no script
+   execution) and is opt-in per deployment.
 
-### Constraints on plugin LiveViews
+### Constraints on plugin tabs
 
-To run inside `ex_dns_web`, plugin LiveViews must:
-
-* `use ExDns.Web.PluginLiveView` (a tiny shim we provide that
-  imports the right modules + restricts the `socket.assigns`
-  to a documented allow-list).
-* Render via `<Layouts.app>` so theming + nav are consistent.
-* Use the project's primitives + core_components — no
-  arbitrary Tailwind utility classes that bypass the theme
-  tokens.
-* No client-side JS bundle of their own — same `app.js` as the
-  rest. If a plugin needs interactivity, it does it via
-  LiveView events.
+* Plugin data is JSON over the API; no BEAM-side coupling
+  between the plugin and the UI.
+* Each plugin's API surface is bounded by its OpenAPI
+  fragment — anything not in the fragment is a 404.
+* The DNS server enforces the bearer token's role on plugin
+  routes the same way it does on its own routes.
 
 ### Hot install / hot remove
 
-When a new plugin node joins the cluster, registers, and
-declares a UI:
+When a plugin node joins the cluster, registers, and declares
+UI metadata:
 
-* The web app's nav updates live (LiveView re-renders for every
-  connected client). New tab appears within seconds.
-* When the plugin node leaves: tab disappears; users on its
-  page get a redirect to `/` with a flash message.
+* The DNS server's SSE stream (`/api/v1/events`) emits a
+  `plugin.registered` event with the slug and merged OpenAPI
+  fragment.
+* Connected UI clients re-fetch `GET /api/v1/plugins` and
+  rebuild the nav. New tab appears within seconds.
+* When the plugin node leaves: SSE emits `plugin.unregistered`;
+  the UI removes the tab; clients on its page redirect to `/`
+  with a flash.
 
 ### Versioning
 
-The plugin's `metadata.version` + the web app's known plugin
-contract version are both declared. If they're incompatible,
-the registry refuses to register and surfaces a warning in the
-admin "Plugins" page.
+* Plugin metadata declares its OpenAPI fragment's version.
+* The registry refuses to merge a fragment whose `openapi`
+  major version disagrees with the server's.
+* Mismatches surface in `GET /api/v1/plugins` so operators see
+  the unhealthy plugin in the UI's "Plugins" page.
 
 ### What's NOT supported (deliberately)
 
-* Plugin-supplied raw HTML / arbitrary JS (security + theming).
-* Plugins overriding core nav items (only the plugins area
-  takes plugin tabs).
-* Plugin-supplied static assets (images, fonts) in v1 — they
-  must inline as data URLs or be served from their own node.
-  v2 adds an asset proxy.
+* Plugin-supplied raw HTML / arbitrary JS in v1 (security +
+  theming). The opt-in v2 escape hatch is sandboxed.
+* Plugins loading code into the UI app's BEAM. Ever. The UI
+  has zero compile-time or runtime dependency on plugin code.
+* Plugin-supplied static assets in v1 — inline as data URLs
+  or serve from the plugin's own HTTP endpoint. v2 adds an
+  asset proxy through the DNS server's API.
 
 ---
 
@@ -937,43 +1076,53 @@ external servers don't need to install them.
 
 ## Sequencing across the six sections
 
-The sections have a natural dependency graph:
+Revised dependency graph (the API contract is now upstream of
+both the UI and the plugin framework's UI surface):
 
 ```
-       §2 (policy phases)
-            │
-            ▼
-       §3 (plugin framework)
-            │
-       ┌────┴─────┐
-       ▼          ▼
-     §4 (anycast §5 (plugin
-       plugin)    UI tabs)
+              §1 phase 0 (formal API)
                        │
-                       ▼
-                §1 (UI itself)
-                       │
-                       ▼
-                §6 (BIND parity)
+       ┌───────────────┼───────────────┐
+       ▼               ▼               ▼
+   §1 phase 1     §2 (policy       §3 (plugin
+   (read-only UI)  phases)         framework)
+       │               │               │
+       │           ┌───┴────┐          │
+       │           ▼        ▼          ▼
+       │         §4 (anycast plugin) ──┘
+       │
+       ▼
+   §1 phase 2-3 (mutations + DNSSEC UI)
+       │
+       ▼
+   §5 (plugin tab API + UI rendering)
+       │
+       ▼
+   §6 (BIND parity)
 ```
 
 Build order:
 
-1. **§2** — policy phase model + scratchpad + Registry. ~3 chunks.
-2. **§3** — plugin behaviour, request/reply structs, Registry,
+1. **§1 phase 0 — formal API.** OpenAPI v1 spec +
+   read-only routes + bearer-token issuer + SSE stream.
+   `mix exdns.openapi.check` in CI. ~6 chunks.
+2. **§2** — policy phase model + scratchpad + Registry. ~3 chunks.
+3. **§3** — plugin behaviour, request/reply structs, Registry,
    PluginDispatch policy, libcluster integration. ~6 chunks.
-3. **§1 phase 1** — read-only UI shell + every-layout
-   primitives + light/dark mode + ZonesLive + ZoneLive.
-   ~5 chunks.
-4. **§4** — port `SourceIp` to `ex_dns_anycast` plugin.
+4. **§1 phase 1 — read-only `ex_dns_ui`.** Separate Mix
+   project. Generated typed API client. ZonesLive + ZoneLive
+   in display-only mode + every-layout primitives + light/dark
+   mode + SecondariesLive + observability dashboards. ~6 chunks.
+5. **§4** — port `SourceIp` to `ex_dns_anycast` plugin.
    ~3 chunks. Validates §3 end-to-end.
-5. **§1 phase 2-3** — record edits + DNSSEC pages.
-   ~4 chunks.
-6. **§5** — plugin UI tab discovery + dynamic LiveView
-   routing. ~3 chunks. Validates plugin framework's UI
-   contract via the anycast plugin's UI.
-7. **§6** — BIND-gap fixes in the order recommended above.
+6. **§1 phase 2-3** — mutating API routes + UI record edits
+   + DNSSEC + secondaries UI. ~5 chunks.
+7. **§5** — plugin OpenAPI fragment merging + plugin tab
+   discovery + generic plugin views in the UI. ~4 chunks.
+   Validates the plugin → API → UI contract via the anycast
+   plugin's tab.
+8. **§6** — BIND-gap fixes in the order recommended above.
    Each is a separate batch of chunks.
 
-Total surface: ~30 implementation chunks across the six
+Total surface: ~35 implementation chunks across the six
 sections, plus the BIND-gap items as ongoing follow-ups.

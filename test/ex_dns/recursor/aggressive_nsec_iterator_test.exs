@@ -124,8 +124,13 @@ defmodule ExDns.Recursor.AggressiveNSECIteratorTest do
     Cache.put("alpha.example.test", :nsec, [nsec], 60)
 
     # Force the entry's expiry into the past.
-    [{key, kind, payload, _}] = :ets.lookup(:ex_dns_recursor_cache, {"alpha.example.test", :nsec})
-    :ets.insert(:ex_dns_recursor_cache, {key, kind, payload, :erlang.monotonic_time(:second) - 1})
+    [{key, kind, payload, _, original_ttl}] =
+      :ets.lookup(:ex_dns_recursor_cache, {"alpha.example.test", :nsec})
+
+    :ets.insert(
+      :ex_dns_recursor_cache,
+      {key, kind, payload, :erlang.monotonic_time(:second) - 1, original_ttl}
+    )
 
     # Now charlie should NOT trigger the aggressive path.
     refute aggressive_fired?(fn ->

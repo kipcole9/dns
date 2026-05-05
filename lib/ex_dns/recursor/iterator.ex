@@ -27,7 +27,7 @@ defmodule ExDns.Recursor.Iterator do
 
   alias ExDns.Message
   alias ExDns.Message.{Header, Question}
-  alias ExDns.Recursor.{Cache, Client, RootHints}
+  alias ExDns.Recursor.{Cache, Client, Prefetch, RootHints}
 
   @max_depth 16
   @max_time_ms 5_000
@@ -51,10 +51,70 @@ defmodule ExDns.Recursor.Iterator do
     max_depth = Keyword.get(options, :max_depth, @max_depth)
 
     case Cache.lookup(qname, qtype) do
-      {:hit, records} -> {:ok, records}
-      {:nxdomain, _soa} -> {:error, :nxdomain}
-      {:nodata, _soa} -> {:ok, []}
-      :miss -> resolve_after_miss(qname, qtype, max_depth, deadline)
+      {:hit, records} ->
+        maybe_prefetch_after_hit(qname, qtype, options)
+        {:ok, records}
+
+      {:nxdomain, _soa} ->
+        {:error, :nxdomain}
+
+      {:nodata, _soa} ->
+        {:ok, []}
+
+      :miss ->
+        case resolve_after_miss(qname, qtype, max_depth, deadline) do
+          {:error, reason} = err ->
+            maybe_serve_stale(qname, qtype, reason) || err
+
+          ok ->
+            ok
+        end
+    end
+  end
+
+  # Fire a background re-resolution if the entry is in its
+  # trailing prefetch window. Idempotent and dedup'd by
+  # `Prefetch.maybe_prefetch/4`. Disabled by passing
+  # `prefetch: false` (used by the prefetch task itself to avoid
+  # recursion).
+  defp maybe_prefetch_after_hit(qname, qtype, options) do
+    if Keyword.get(options, :prefetch, true) do
+      Prefetch.maybe_prefetch(qname, qtype, fn ->
+        # Bypass-cache re-iteration: ignore any cached entry and
+        # write a fresh one. The simplest implementation is to
+        # delete the row and call back into resolve/3 — that path
+        # writes the new entry on success.
+        :ets.delete(:ex_dns_recursor_cache, {String.downcase(qname, :ascii), qtype})
+        resolve(qname, qtype, prefetch: false)
+      end)
+    end
+
+    :ok
+  end
+
+  @doc false
+  # Public for testing — see test/ex_dns/recursor/iterator_prefetch_stale_test.exs.
+  # On upstream failure (timeout / network error / max_depth),
+  # consult the cache for a stale entry inside the serve-stale
+  # window (RFC 8767). The stale entry is returned only for
+  # network-level upstream failures, not NXDOMAIN — a real
+  # NXDOMAIN means the name no longer exists upstream and
+  # serving stale would be wrong.
+  def maybe_serve_stale(_qname, _qtype, :nxdomain), do: nil
+
+  def maybe_serve_stale(qname, qtype, reason) do
+    case Cache.lookup_stale(qname, qtype) do
+      {:stale, records, age_secs} ->
+        :telemetry.execute(
+          [:ex_dns, :recursor, :serve_stale],
+          %{count: 1, age_secs: age_secs},
+          %{qname: qname, qtype: qtype, upstream_error: reason}
+        )
+
+        {:ok, records}
+
+      _ ->
+        nil
     end
   end
 

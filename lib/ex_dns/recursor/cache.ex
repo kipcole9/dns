@@ -78,7 +78,7 @@ defmodule ExDns.Recursor.Cache do
   def put(name, type, records, ttl) when is_integer(ttl) and ttl > 0 do
     init()
     expires_at = now() + ttl
-    :ets.insert(@table, {{normalize(name), type}, :positive, records, expires_at})
+    :ets.insert(@table, {{normalize(name), type}, :positive, records, expires_at, ttl})
     :ok
   end
 
@@ -115,7 +115,7 @@ defmodule ExDns.Recursor.Cache do
     init()
     ttl = negative_ttl(soa)
     expires_at = now() + ttl
-    :ets.insert(@table, {{normalize(name), :nxdomain}, :nxdomain, soa, expires_at})
+    :ets.insert(@table, {{normalize(name), :nxdomain}, :nxdomain, soa, expires_at, ttl})
     :ok
   end
 
@@ -123,7 +123,7 @@ defmodule ExDns.Recursor.Cache do
     init()
     ttl = negative_ttl(soa)
     expires_at = now() + ttl
-    :ets.insert(@table, {{normalize(name), qtype}, :nodata, soa, expires_at})
+    :ets.insert(@table, {{normalize(name), qtype}, :nodata, soa, expires_at, ttl})
     :ok
   end
 
@@ -164,17 +164,33 @@ defmodule ExDns.Recursor.Cache do
 
   defp lookup_entry(key) do
     case :ets.lookup(@table, key) do
-      [{^key, kind, payload, expires_at}] ->
-        if expires_at > now() do
-          format_entry(kind, payload)
-        else
-          :ets.delete(@table, key)
-          nil
+      [{^key, kind, payload, expires_at, _orig_ttl}] ->
+        cond do
+          expires_at > now() ->
+            format_entry(kind, payload)
+
+          past_stale_window?(expires_at) ->
+            :ets.delete(@table, key)
+            nil
+
+          true ->
+            # Past hard TTL but still inside the serve-stale window:
+            # don't delete, but `lookup/2` still treats it as a miss.
+            # `lookup_stale/2` will pick it up.
+            nil
         end
 
       _ ->
         nil
     end
+  end
+
+  defp past_stale_window?(expires_at) do
+    expires_at + serve_stale_max() <= now()
+  end
+
+  defp serve_stale_max do
+    Application.get_env(:ex_dns, :recursor_serve_stale_ttl, 0)
   end
 
   defp format_entry(:positive, records), do: {:hit, records}
@@ -195,6 +211,129 @@ defmodule ExDns.Recursor.Cache do
       %{count: 1},
       %{layer: :recursor, qname: name, qtype: type, kind: kind}
     )
+  end
+
+  @doc """
+  Look up a name + qtype, including expired entries within the
+  serve-stale window (RFC 8767).
+
+  Distinct from `lookup/2`: this returns `{:stale, records, age_secs}`
+  for entries past their TTL but still inside the configured
+  `:recursor_serve_stale_ttl` window. Callers (the iterator)
+  invoke this only after upstream resolution fails.
+
+  ### Returns
+
+  * `{:hit, records}` — fresh positive answer.
+  * `{:nodata, soa}` — fresh cached NODATA.
+  * `{:nxdomain, soa}` — fresh cached NXDOMAIN.
+  * `{:stale, records, age_secs}` — expired positive answer still
+    within the serve-stale window. `age_secs` is how many seconds
+    ago the entry expired.
+  * `:miss` — nothing cached, or every match past the stale window.
+
+  ### Examples
+
+      iex> ExDns.Recursor.Cache.clear()
+      iex> ExDns.Recursor.Cache.lookup_stale("nothing.test", :a)
+      :miss
+
+  """
+  @spec lookup_stale(binary(), atom()) ::
+          {:hit, [struct()]}
+          | {:nodata, struct()}
+          | {:nxdomain, struct()}
+          | {:stale, [struct()], non_neg_integer()}
+          | :miss
+  def lookup_stale(name, type) do
+    init()
+    norm = normalize(name)
+
+    case lookup_entry_with_stale({norm, type}) do
+      nil -> lookup_entry_with_stale({norm, :nxdomain}) || :miss
+      result -> result
+    end
+  end
+
+  defp lookup_entry_with_stale(key) do
+    case :ets.lookup(@table, key) do
+      [{^key, kind, payload, expires_at, _orig_ttl}] ->
+        now_s = now()
+
+        cond do
+          expires_at > now_s ->
+            format_entry(kind, payload)
+
+          past_stale_window?(expires_at) ->
+            :ets.delete(@table, key)
+            nil
+
+          kind == :positive ->
+            {:stale, payload, now_s - expires_at}
+
+          true ->
+            # Negative entries are not served stale.
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
+  Returns `true` when the cached `{name, type}` entry is inside
+  its prefetch window — the trailing `prefetch_fraction` of its
+  original TTL.
+
+  Used by `ExDns.Recursor.Prefetch` so the iterator can fire an
+  asynchronous re-resolution before a popular record actually
+  expires.
+
+  ### Arguments
+
+  * `name` is the (case-insensitive) owner name.
+  * `type` is the qtype atom.
+
+  ### Options
+
+  * `:prefetch_fraction` — fraction (0.0–1.0) of the original TTL
+    that defines the trailing prefetch window. Default `0.1` (the
+    last 10%% of the TTL).
+
+  ### Returns
+
+  * `true` when a non-expired positive entry is inside the
+    trailing window.
+  * `false` otherwise (no entry, expired entry, or fresh entry
+    still outside the window).
+
+  ### Examples
+
+      iex> ExDns.Recursor.Cache.clear()
+      iex> ExDns.Recursor.Cache.in_prefetch_window?("nothing.test", :a)
+      false
+
+  """
+  @spec in_prefetch_window?(binary(), atom(), keyword()) :: boolean()
+  def in_prefetch_window?(name, type, options \\ []) do
+    init()
+    fraction = Keyword.get(options, :prefetch_fraction, prefetch_fraction_default())
+
+    case :ets.lookup(@table, {normalize(name), type}) do
+      [{_, :positive, _payload, expires_at, original_ttl}]
+      when is_integer(original_ttl) and original_ttl > 0 ->
+        now_s = now()
+        threshold = expires_at - trunc(original_ttl * fraction)
+        expires_at > now_s and now_s >= threshold
+
+      _ ->
+        false
+    end
+  end
+
+  defp prefetch_fraction_default do
+    Application.get_env(:ex_dns, :recursor_prefetch_fraction, 0.1)
   end
 
   @doc """
@@ -229,7 +368,7 @@ defmodule ExDns.Recursor.Cache do
     try do
       :ets.foldl(
         fn
-          {{name, :nsec}, :positive, records, expires_at}, acc
+          {{name, :nsec}, :positive, records, expires_at, _orig_ttl}, acc
           when is_binary(name) ->
             cond do
               expires_at <= now_secs -> acc

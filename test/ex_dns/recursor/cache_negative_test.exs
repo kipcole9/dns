@@ -73,7 +73,7 @@ defmodule ExDns.Recursor.CacheNegativeTest do
     # SOA.minimum = 5s; SOA.ttl = 60s — cache for 5s.
     Cache.put_negative("brief.test", :a, :nxdomain, soa(minimum: 5, ttl: 60))
 
-    [{_, :nxdomain, _soa, expires_at}] =
+    [{_, :nxdomain, _soa, expires_at, _orig_ttl}] =
       :ets.lookup(:ex_dns_recursor_cache, {"brief.test", :nxdomain})
 
     expected_max = :erlang.monotonic_time(:second) + 5
@@ -83,7 +83,7 @@ defmodule ExDns.Recursor.CacheNegativeTest do
   test "negative TTL falls back to SOA.ttl when minimum > ttl" do
     Cache.put_negative("brief2.test", :a, :nxdomain, soa(minimum: 600, ttl: 30))
 
-    [{_, :nxdomain, _, expires_at}] =
+    [{_, :nxdomain, _, expires_at, _orig_ttl}] =
       :ets.lookup(:ex_dns_recursor_cache, {"brief2.test", :nxdomain})
 
     expected_max = :erlang.monotonic_time(:second) + 30
