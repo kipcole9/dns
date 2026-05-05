@@ -174,24 +174,29 @@ defmodule ExDns.View.Resolver do
   end
 
   defp refused_response(%Message{header: %Header{} = header} = query) do
-    %Message{
-      query
-      | header: %Header{
-          header
-          | qr: 1,
-            aa: 0,
-            ra: 0,
-            ad: 0,
-            cd: 0,
-            rc: 5,
-            anc: 0,
-            auc: 0,
-            adc: 0
-        },
-        answer: [],
-        authority: [],
-        additional: []
-    }
+    response =
+      %Message{
+        query
+        | header: %Header{
+            header
+            | qr: 1,
+              aa: 0,
+              ra: 0,
+              ad: 0,
+              cd: 0,
+              rc: 5,
+              anc: 0,
+              auc: 0,
+              adc: query.header.adc
+          },
+          answer: [],
+          authority: [],
+          additional: query.additional
+      }
+
+    ExDns.ExtendedDNSErrors.PostProcess.attach(response, [
+      {:prohibited, "no view matched the client"}
+    ])
   end
 
   defp tsig_key_name(%Request{} = _request) do

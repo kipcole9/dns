@@ -201,6 +201,50 @@ defmodule ExDns.View.ResolverTest do
     end
   end
 
+  describe "RFC 8914 Extended DNS Errors" do
+    test "REFUSED carries an EDE :prohibited entry" do
+      Application.put_env(:ex_dns, :views, [
+        %{name: "internal", match: [{:cidr, {{10, 0, 0, 0}, 8}}], zones: []}
+      ])
+
+      Application.delete_env(:ex_dns, :view_fallthrough)
+
+      # Build a request with EDNS0 OPT so EDE has somewhere to go.
+      query = %Message{
+        header: %Header{
+          id: 1,
+          qr: 0,
+          oc: 0,
+          aa: 0,
+          tc: 0,
+          rd: 0,
+          ra: 0,
+          ad: 0,
+          cd: 0,
+          rc: 0,
+          qc: 1,
+          anc: 0,
+          auc: 0,
+          adc: 1
+        },
+        question: %Question{host: "x.test", type: :a, class: :in},
+        answer: [],
+        authority: [],
+        additional: [%ExDns.Resource.OPT{payload_size: 1232, options: []}]
+      }
+
+      request =
+        Request.new(query, source_ip: {1, 2, 3, 4}, source_port: nil, transport: :udp)
+
+      response = Resolver.resolve(request)
+
+      assert response.header.rc == 5
+
+      [%ExDns.Resource.OPT{options: opts}] = response.additional
+      assert [{:prohibited, _msg}] = ExDns.ExtendedDNSErrors.find_in_options(opts)
+    end
+  end
+
   describe "telemetry" do
     test "[:ex_dns, :view, :selected] fires with the chosen view name" do
       Application.put_env(:ex_dns, :views, [

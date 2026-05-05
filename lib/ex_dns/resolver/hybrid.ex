@@ -78,7 +78,7 @@ defmodule ExDns.Resolver.Hybrid do
             adc: response_adc(query)
         }
 
-        %Message{
+        response = %Message{
           query
           | header: new_header,
             answer: records,
@@ -86,14 +86,37 @@ defmodule ExDns.Resolver.Hybrid do
             additional: response_additional(query)
         }
 
+        attach_validation_ede(response, status)
+
       {:error, :nxdomain} ->
         respond(query, [], 3)
 
       {:error, _other} ->
         # SERVFAIL on transport / depth / time errors.
         respond(query, [], 2)
+        |> ExDns.ExtendedDNSErrors.PostProcess.attach([
+          {:no_reachable_authority, "iterator failed to resolve"}
+        ])
     end
   end
+
+  # Attach an EDE option per DNSSEC validation outcome. RFC 8914
+  # §4 reserves codes for the failure modes the validator
+  # surfaces; `:secure` and `:insecure` carry no EDE since
+  # there's nothing for the client to be informed about.
+  defp attach_validation_ede(response, :bogus) do
+    ExDns.ExtendedDNSErrors.PostProcess.attach(response, [
+      {:dnssec_bogus, "DNSSEC validation failed"}
+    ])
+  end
+
+  defp attach_validation_ede(response, :indeterminate) do
+    ExDns.ExtendedDNSErrors.PostProcess.attach(response, [
+      {:dnssec_indeterminate, "Could not build a validation chain"}
+    ])
+  end
+
+  defp attach_validation_ede(response, _status), do: response
 
   defp client_do_bit?(%Message{additional: additional}) when is_list(additional) do
     Enum.any?(additional, fn

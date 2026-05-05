@@ -100,6 +100,7 @@ defmodule ExDns.Listener.TCP do
               raw_response
               |> then(&ExDns.Cookies.PostProcess.process(query, &1, source_ip))
               |> then(&ExDns.EDNSClientSubnet.PostProcess.process(query, &1))
+              |> maybe_keepalive(query)
               |> maybe_pad(query)
 
             :telemetry.execute(
@@ -211,6 +212,71 @@ defmodule ExDns.Listener.TCP do
         socket,
         <<byte_size(bytes)::size(16), bytes::binary>>
       )
+    end
+
+    # If the client signalled EDNS keepalive support (RFC 7828)
+    # and the server is configured to honour it, attach the
+    # configured idle timeout to the response. Lets DoT clients
+    # confidently pipeline subsequent queries on the same TLS
+    # connection.
+    defp maybe_keepalive(response, query) do
+      with true <- keepalive_enabled?(),
+           true <- client_requested_keepalive?(query),
+           timeout when is_integer(timeout) <- keepalive_timeout() do
+        attach_keepalive_option(response, timeout)
+      else
+        _ -> response
+      end
+    end
+
+    defp keepalive_enabled? do
+      Application.get_env(:ex_dns, :keepalive, []) |> Keyword.get(:enabled, false)
+    end
+
+    defp keepalive_timeout do
+      # Default ~60s = 600 × 100 ms.
+      Application.get_env(:ex_dns, :keepalive, []) |> Keyword.get(:timeout_100ms, 600)
+    end
+
+    defp client_requested_keepalive?(%ExDns.Message{additional: additional})
+         when is_list(additional) do
+      Enum.any?(additional, fn
+        %ExDns.Resource.OPT{options: opts} -> ExDns.EDNSKeepalive.requested?(opts)
+        _ -> false
+      end)
+    end
+
+    defp client_requested_keepalive?(_), do: false
+
+    defp attach_keepalive_option(%ExDns.Message{additional: additional} = response, timeout) do
+      option = ExDns.EDNSKeepalive.encode_response_option(timeout)
+
+      new_additional =
+        case Enum.find_index(additional, &match?(%ExDns.Resource.OPT{}, &1)) do
+          nil ->
+            # Client advertised EDNS by including the keepalive
+            # option in their OPT, so we can rely on the response
+            # carrying an OPT too. If somehow there isn't one,
+            # silently skip — RFC 7828 requires OPT for the option.
+            additional
+
+          index ->
+            {before_opt, [%ExDns.Resource.OPT{} = opt | after_opt]} =
+              Enum.split(additional, index)
+
+            new_opt = %ExDns.Resource.OPT{
+              opt
+              | options: [option | List.keydelete(opt.options, ExDns.EDNSKeepalive.option_code(), 0)]
+            }
+
+            before_opt ++ [new_opt | after_opt]
+        end
+
+      %ExDns.Message{
+        response
+        | additional: new_additional,
+          header: %{response.header | adc: length(new_additional)}
+      }
     end
 
     # Apply EDNS padding when the query advertised it. RFC 8467
