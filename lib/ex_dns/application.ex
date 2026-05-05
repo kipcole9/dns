@@ -109,21 +109,17 @@ defmodule ExDns.Application do
   defp autoload_zones do
     require Logger
 
-    case Application.get_env(:ex_dns, :zones, []) do
-      [] ->
-        :ok
+    Application.get_env(:ex_dns, :zones, [])
+    |> ExDns.Zone.Source.expand()
+    |> Enum.each(fn path ->
+      case ExDns.Zone.load_file(path) do
+        {:ok, zone} ->
+          Logger.info("Loaded zone #{ExDns.Zone.name(zone)} from #{path}")
 
-      zones when is_list(zones) ->
-        Enum.each(zones, fn path ->
-          case ExDns.Zone.load_file(path) do
-            {:ok, zone} ->
-              Logger.info("Loaded zone #{ExDns.Zone.name(zone)} from #{path}")
-
-            {:error, reason} ->
-              Logger.error("Failed to load zone #{path}: #{inspect(reason)}")
-          end
-        end)
-    end
+        {:error, reason} ->
+          Logger.error("Failed to load zone #{path}: #{inspect(reason)}")
+      end
+    end)
   end
 
   def listener_options(inet_family, address \\ nil)

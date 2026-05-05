@@ -1,0 +1,21 @@
+#!/bin/sh
+#
+# exdnsctl — RNDC-style operator CLI for ExDns.
+#
+# Wraps `mix exdns.ctl` so operators can run it from anywhere
+# without remembering the mix prefix. Drop this on your $PATH:
+#
+#     ln -s "$(pwd)/bin/exdnsctl" ~/.local/bin/
+#
+# Run from inside the ExDns project root, or set EXDNS_PROJECT
+# in your environment to point at it:
+#
+#     EXDNS_PROJECT=/opt/exdns exdnsctl reload
+
+set -e
+
+if [ -n "${EXDNS_PROJECT:-}" ]; then
+  cd "$EXDNS_PROJECT"
+fi
+
+exec mix exdns.ctl "$@"

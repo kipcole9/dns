@@ -42,7 +42,9 @@ defmodule ExDns.Zone.Reload do
   """
   @spec reload_all() :: {non_neg_integer(), non_neg_integer()}
   def reload_all do
-    zones = Application.get_env(:ex_dns, :zones, [])
+    zones =
+      Application.get_env(:ex_dns, :zones, [])
+      |> ExDns.Zone.Source.expand()
 
     {loaded, failed} =
       Enum.reduce(zones, {0, 0}, fn path, {ok, err} ->
