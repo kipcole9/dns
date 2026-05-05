@@ -72,6 +72,7 @@ defmodule ExDns.Update.Applier do
 
               true ->
                 Storage.put_zone(apex_norm, new_records_with_serial)
+                ExDns.Zone.Snapshot.Writer.request()
                 :ok
             end
 

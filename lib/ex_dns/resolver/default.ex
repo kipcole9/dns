@@ -58,9 +58,21 @@ defmodule ExDns.Resolver.Default do
 
   # UPDATE (RFC 2136, opcode 5). Needs source-IP context for
   # the ACL gate, so route the Request directly rather than
-  # stripping to Message first.
+  # stripping to Message first. RFC 3007: also runs the request
+  # through TSIG verification before applying.
   def resolve(%Request{message: %Message{header: %Header{qr: 0, oc: 5}} = msg} = request) do
-    handle_update(msg, request.source_ip)
+    case ExDns.Update.TSIG.verify_request(request) do
+      {:ok, key_name, request_mac} when is_binary(key_name) ->
+        msg
+        |> handle_update(request.source_ip, key_name)
+        |> ExDns.Update.TSIG.sign_response({key_name, request_mac})
+
+      {:ok, :no_tsig} ->
+        handle_update(msg, request.source_ip, nil)
+
+      {:refuse, _reason} ->
+        update_response(msg, 5)
+    end
   end
 
   def resolve(%Request{message: message}), do: resolve(message)
@@ -504,35 +516,14 @@ defmodule ExDns.Resolver.Default do
     soa_authority(apex) ++ nsec_authority(apex, qname, kind)
   end
 
+  # Pick the right denial-of-existence proof for `kind` (NODATA
+  # or NXDOMAIN) based on the zone's per-zone DNSSEC config —
+  # NSEC by default, NSEC3 when the operator has opted in via
+  # `:ex_dns, :dnssec_zones, %{apex => [denial: :nsec3, …]}`.
   defp nsec_authority(apex, qname, kind) do
     case ExDns.DNSSEC.KeyStore.get_signing_key(apex) do
-      nil ->
-        # Zone is not DNSSEC-signed; no NSEC needed.
-        []
-
-      _signing_key ->
-        case Storage.dump_zone(apex) do
-          {:ok, records} ->
-            chain = ExDns.DNSSEC.NSEC.generate(apex, records)
-            nsec_for(chain, qname, kind)
-
-          _ ->
-            []
-        end
-    end
-  end
-
-  defp nsec_for(chain, qname, :nodata) do
-    case ExDns.DNSSEC.NSEC.for_owner(chain, qname) do
       nil -> []
-      nsec -> [nsec]
-    end
-  end
-
-  defp nsec_for(chain, qname, :nxdomain) do
-    case ExDns.DNSSEC.NSEC.covering(chain, qname) do
-      nil -> []
-      nsec -> [nsec]
+      _ -> ExDns.DNSSEC.DenialOfExistence.authority_for(apex, qname, kind)
     end
   end
 
@@ -582,7 +573,10 @@ defmodule ExDns.Resolver.Default do
         %OPT{} -> [response_opt_for(client_opt, rcode)]
       end
 
-    additional = additional_records ++ opt_additional
+    derived_glue =
+      ExDns.Zone.Additionals.derive(answers ++ authority, additional_records)
+
+    additional = additional_records ++ derived_glue ++ opt_additional
 
     new_header = %Header{
       header
@@ -706,12 +700,18 @@ defmodule ExDns.Resolver.Default do
 
   # ----- UPDATE handling (RFC 2136) ---------------------------------
 
-  defp handle_update(%Message{question: %Question{host: apex, class: class}} = message, source_ip) do
+  defp handle_update(
+         %Message{question: %Question{host: apex, class: class}} = message,
+         source_ip,
+         tsig_key_name
+       ) do
     apex_norm = String.downcase(apex, :ascii) |> String.trim_trailing(".")
 
     cond do
-      # Step 1 — ACL.
-      ExDns.Update.ACL.check(apex_norm, source_ip, nil) == :refuse ->
+      # Step 1 — ACL (RFC 2136 §3.1 + RFC 3007 §3.0): pass the
+      # verified TSIG key name so the per-zone policy can require
+      # signature with a particular key.
+      ExDns.Update.ACL.check(apex_norm, source_ip, tsig_key_name) == :refuse ->
         update_response(message, 5)
 
       # Step 2 — we must own the apex (RFC 2136 §3.1: NOTAUTH
@@ -731,7 +731,7 @@ defmodule ExDns.Resolver.Default do
     end
   end
 
-  defp handle_update(message, _source_ip) do
+  defp handle_update(message, _source_ip, _tsig_key_name) do
     update_response(message, 5)
   end
 

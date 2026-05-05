@@ -116,6 +116,7 @@ defmodule ExDns.Zone.Catalog.Applier do
         Logger.info("ExDns.Zone.Catalog.Applier: stopping secondary for #{name}")
         :gen_statem.stop(pid, :normal, 5_000)
         Storage.delete_zone(name)
+        ExDns.Zone.Snapshot.Writer.request()
     end
   end
 

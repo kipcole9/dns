@@ -293,6 +293,10 @@ defmodule ExDns.Resource do
   def decode_type(256), do: :uri
   def decode_type(257), do: :caa
   def decode_type(type) when type in 65280..65534, do: :private_use
+  # Catch-all for unassigned / reserved type integers (incl. 0
+  # and 65535). The fuzz suite caught this gap — without it the
+  # decoder crashes on malformed wire input.
+  def decode_type(type) when is_integer(type), do: :unknown
 
   @doc """
   Returns the class name from the  integer in the
@@ -306,6 +310,11 @@ defmodule ExDns.Resource do
   def decode_class(254), do: :non
   def decode_class(255), do: :all
   def decode_class(class) when class in 65280..65534, do: :private_use
+  # Catch-all for any other integer class — including reserved
+  # values (0, 65535) and the IANA unassigned range. Returning
+  # `:unknown` lets the decoder keep parsing instead of crashing
+  # on malformed wire input. The fuzz suite caught this gap.
+  def decode_class(class) when is_integer(class), do: :unknown
 
   # Translates the encoded class to the zone file representation
   def decode_class(:internet), do: "IN"

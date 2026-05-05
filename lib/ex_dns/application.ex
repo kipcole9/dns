@@ -52,13 +52,16 @@ defmodule ExDns.Application do
         dnstap_children() ++
         health_children() ++
         admin_children() ++
-        secondary_zone_children()
+        secondary_zone_children() ++
+        snapshot_children() ++
+        catalog_subscription_children()
 
     opts = [strategy: :one_for_one, name: ExDns.Supervisor]
 
     case Supervisor.start_link(children, opts) do
       {:ok, _pid} = ok ->
         autoload_zones()
+        replay_zone_snapshot()
         attach_optional_telemetry_handlers()
         ExDns.SystemD.notify_ready()
         ok
@@ -125,6 +128,53 @@ defmodule ExDns.Application do
           Logger.error("Failed to load zone #{path}: #{inspect(reason)}")
       end
     end)
+  end
+
+  # Replay the on-disk zone snapshot AFTER file-based zones load,
+  # so runtime mutations (RFC 2136 UPDATE, secondary AXFR/IXFR,
+  # catalog applies) overlay the file baseline. No-op when no
+  # snapshot file exists yet (first-boot case).
+  defp replay_zone_snapshot do
+    require Logger
+
+    if ExDns.Zone.Snapshot.enabled?() do
+      path = ExDns.Zone.Snapshot.configured_path()
+
+      case ExDns.Zone.Snapshot.replay(path) do
+        {:ok, count} ->
+          Logger.info("ExDns.Zone.Snapshot: replayed #{count} zone(s) from #{path}")
+
+        {:error, :enoent} ->
+          Logger.info("ExDns.Zone.Snapshot: no snapshot at #{path} — first boot")
+
+        {:error, reason} ->
+          Logger.error("ExDns.Zone.Snapshot: replay of #{path} failed: #{inspect(reason)}")
+      end
+    end
+  end
+
+  defp snapshot_children do
+    if ExDns.Zone.Snapshot.enabled?() do
+      [ExDns.Zone.Snapshot.Writer]
+    else
+      []
+    end
+  end
+
+  # Spin up one `ExDns.Zone.Catalog.Subscription` GenServer per
+  # configured catalog. Each subscription polls its primary on
+  # the catalog's SOA refresh interval and applies member-set
+  # changes via `ExDns.Zone.Catalog.Applier`.
+  defp catalog_subscription_children do
+    case Application.get_env(:ex_dns, :catalogs) do
+      list when is_list(list) ->
+        Enum.map(list, fn entry ->
+          {ExDns.Zone.Catalog.Subscription, entry}
+        end)
+
+      _ ->
+        []
+    end
   end
 
   def listener_options(inet_family, address \\ nil)

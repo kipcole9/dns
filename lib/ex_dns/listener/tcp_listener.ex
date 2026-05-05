@@ -75,7 +75,8 @@ defmodule ExDns.Listener.TCP do
               ExDns.Request.new(query,
                 source_ip: source_ip,
                 source_port: source_port,
-                transport: :tcp
+                transport: :tcp,
+                wire_bytes: message_bytes
               )
 
             start_metadata = query_metadata(query, source_ip, source_port)

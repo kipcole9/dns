@@ -194,6 +194,7 @@ defmodule ExDns.Zone.Secondary do
     case axfr_from_any(primaries, apex, data.tsig_key) do
       {:ok, records, %SOA{} = soa} ->
         Storage.put_zone(apex, records)
+        ExDns.Zone.Snapshot.Writer.request()
 
         :telemetry.execute(
           [:ex_dns, :secondary, :loaded],
@@ -243,6 +244,7 @@ defmodule ExDns.Zone.Secondary do
         case axfr_from_any(primaries, apex, data.tsig_key) do
           {:ok, records, new_soa} ->
             Storage.put_zone(apex, records)
+            ExDns.Zone.Snapshot.Writer.request()
 
             :telemetry.execute(
               [:ex_dns, :secondary, :loaded],

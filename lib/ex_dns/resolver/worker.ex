@@ -34,7 +34,7 @@ defmodule ExDns.Resolver.Worker do
           # unauthorised NOTIFYs.
           :poolboy.checkin(Resolver.Supervisor.pool_name(), self())
         else
-          handle_cast_after_acl(query, address, port, socket, resolver)
+          handle_cast_after_acl(query, message, address, port, socket, resolver)
         end
 
       {:error, reason} ->
@@ -48,7 +48,7 @@ defmodule ExDns.Resolver.Worker do
     {:noreply, resolver}
   end
 
-  defp handle_cast_after_acl(query, address, port, socket, resolver) do
+  defp handle_cast_after_acl(query, wire_bytes, address, port, socket, resolver) do
     start_metadata = query_metadata(query, address, port)
     start_time = System.monotonic_time()
 
@@ -63,7 +63,8 @@ defmodule ExDns.Resolver.Worker do
         ExDns.Request.new(query,
           source_ip: address,
           source_port: port,
-          transport: :udp
+          transport: :udp,
+          wire_bytes: wire_bytes
         )
 
       raw_response = resolver.resolve(request)

@@ -18,6 +18,12 @@ defmodule ExDns.Request do
   * `:transport` — `:udp`, `:tcp`, or `:doh`.
   * `:received_at` — monotonic timestamp in milliseconds when the
     listener handed the request off.
+  * `:wire_bytes` — the unmodified inbound wire form, when the
+    listener captures it. Required by TSIG verification, which
+    re-computes the MAC over the original bytes (label
+    compression makes re-encoding lossy). `nil` when the
+    transport doesn't expose them (in-process synthetic
+    requests, internal pipelines).
 
   """
 
@@ -26,14 +32,16 @@ defmodule ExDns.Request do
           source_ip: :inet.ip_address() | nil,
           source_port: :inet.port_number() | nil,
           transport: :udp | :tcp | :doh,
-          received_at: integer()
+          received_at: integer(),
+          wire_bytes: binary() | nil
         }
 
   defstruct message: nil,
             source_ip: nil,
             source_port: nil,
             transport: :udp,
-            received_at: 0
+            received_at: 0,
+            wire_bytes: nil
 
   @doc """
   Builds a request from a decoded `%ExDns.Message{}` and the
@@ -47,7 +55,8 @@ defmodule ExDns.Request do
       source_ip: Keyword.get(options, :source_ip),
       source_port: Keyword.get(options, :source_port),
       transport: Keyword.get(options, :transport, :udp),
-      received_at: Keyword.get(options, :received_at, monotonic_ms())
+      received_at: Keyword.get(options, :received_at, monotonic_ms()),
+      wire_bytes: Keyword.get(options, :wire_bytes)
     }
   end
 
