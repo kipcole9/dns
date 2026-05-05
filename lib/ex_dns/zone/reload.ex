@@ -80,10 +80,24 @@ defmodule ExDns.Zone.Reload do
   """
   @spec reload_path(Path.t()) :: :ok | {:error, term()}
   def reload_path(path) when is_binary(path) do
-    case ExDns.Zone.load_file(path) do
-      {:ok, zone} ->
-        Logger.info("ExDns.Zone.Reload: loaded #{ExDns.Zone.name(zone)} from #{path}")
-        :ok
+    with {:ok, contents} <- File.read(path),
+         {:ok, parsed} <- ExDns.Zone.load_string(contents, store?: false),
+         apex = ExDns.Zone.name(parsed),
+         previous = previous_records_for(apex),
+         :ok <-
+           ExDns.Zone.Validate.validate(apex, parsed.resources,
+             previous_records: previous
+           ) do
+      ExDns.Zone.store!(parsed)
+      Logger.info("ExDns.Zone.Reload: loaded #{apex} from #{path}")
+      :ok
+    else
+      {:error, problems} when is_list(problems) ->
+        Logger.error(
+          "ExDns.Zone.Reload: validation failed for #{path}: #{inspect(problems)}"
+        )
+
+        {:error, {:invalid_zone, problems}}
 
       {:error, reason} = err ->
         Logger.error("ExDns.Zone.Reload: failed to load #{path}: #{inspect(reason)}")
@@ -91,4 +105,13 @@ defmodule ExDns.Zone.Reload do
     end
   end
 
+  # Pull the currently-stored record list for an apex so the
+  # validator can run the SOA-serial monotonicity check.
+  # Returns `nil` for first-load (no previous version).
+  defp previous_records_for(apex) do
+    case ExDns.Storage.dump_zone(apex) do
+      {:ok, records} -> records
+      _ -> nil
+    end
+  end
 end

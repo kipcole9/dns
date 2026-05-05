@@ -100,6 +100,7 @@ defmodule ExDns.Listener.TCP do
               raw_response
               |> then(&ExDns.Cookies.PostProcess.process(query, &1, source_ip))
               |> then(&ExDns.EDNSClientSubnet.PostProcess.process(query, &1))
+              |> then(&ExDns.NSID.attach(query, &1))
               |> maybe_keepalive(query)
               |> maybe_pad(query)
 

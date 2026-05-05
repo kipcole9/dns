@@ -22,6 +22,11 @@ defmodule ExDns.Application do
     # restart the supervisor).
     ExDns.Drain.clear_draining()
 
+    # If an `EXDNS_CONFIG` env var or `:config_file` Application
+    # env points at an Elixir-data config file, load + apply it
+    # before any subsystem reads its settings.
+    ExDns.Config.load_if_configured()
+
     # The configured storage backend is initialised eagerly so that any
     # zones configured for autoload below can be inserted as the
     # supervision tree comes up.

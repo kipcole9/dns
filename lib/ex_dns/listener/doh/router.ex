@@ -129,6 +129,7 @@ defmodule ExDns.Listener.DoH.Router do
           raw_response
           |> then(&ExDns.Cookies.PostProcess.process(query, &1, conn.remote_ip))
           |> then(&ExDns.EDNSClientSubnet.PostProcess.process(query, &1))
+          |> then(&ExDns.NSID.attach(query, &1))
           |> maybe_pad(query)
 
         response_bytes = Message.encode(response)

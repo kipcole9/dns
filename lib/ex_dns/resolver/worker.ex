@@ -72,6 +72,7 @@ defmodule ExDns.Resolver.Worker do
         raw_response
         |> then(&ExDns.Cookies.PostProcess.process(query, &1, address))
         |> then(&ExDns.EDNSClientSubnet.PostProcess.process(query, &1))
+        |> then(&ExDns.NSID.attach(query, &1))
 
       budget = udp_budget(query)
 

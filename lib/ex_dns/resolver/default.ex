@@ -56,10 +56,23 @@ defmodule ExDns.Resolver.Default do
   """
   @spec resolve(Message.t() | Request.t()) :: Message.t()
 
+  # UPDATE (RFC 2136, opcode 5). Needs source-IP context for
+  # the ACL gate, so route the Request directly rather than
+  # stripping to Message first.
+  def resolve(%Request{message: %Message{header: %Header{qr: 0, oc: 5}} = msg} = request) do
+    handle_update(msg, request.source_ip)
+  end
+
   def resolve(%Request{message: message}), do: resolve(message)
 
   def resolve(%Message{header: %Header{qr: 0, oc: 0}, question: %Question{} = question} = message) do
     answer_query(message, question)
+  end
+
+  # UPDATE arriving as a bare Message (no source-IP context).
+  # Without a request we can't run the ACL — refuse on principle.
+  def resolve(%Message{header: %Header{qr: 0, oc: 5}} = message) do
+    set_response(message, [], rcode: 5, aa: 0, authority: [])
   end
 
   # Inverse query (obsolete) — return NOTIMP.
@@ -293,18 +306,28 @@ defmodule ExDns.Resolver.Default do
   end
 
   defp answer_query_authoritative(message, %Question{host: qname, type: :any}) do
-    case Storage.lookup_any(qname) do
-      {:ok, _apex, records} ->
-        records = Enum.map(records, &normalize_class/1)
-        set_response(message, records, rcode: 0, aa: 1, authority: [])
+    cond do
+      refuse_any?() ->
+        # RFC 8482 §4.3 — replace the full RRset list with a
+        # single synthetic HINFO so the response is small enough
+        # to defang DNS amplification.
+        synthetic = [
+          %ExDns.Resource.HINFO{
+            name: qname,
+            ttl: 3600,
+            class: :in,
+            cpu: "RFC8482",
+            os: ""
+          }
+        ]
 
-      {:error, :nxdomain} ->
-        case Storage.find_zone(qname) do
-          nil -> set_response(message, [], rcode: 3, aa: 0, authority: [])
-          apex -> set_response(message, [], rcode: 3, aa: 1, authority: negative_authority(apex, qname, :nxdomain))
-        end
+        set_response(message, synthetic, rcode: 0, aa: 1, authority: [])
+
+      true ->
+        do_answer_any(message, qname)
     end
   end
+
 
   defp answer_query_authoritative(message, %Question{host: qname, type: qtype}) do
     case resolve_with_cname_chasing(qname, qtype, @max_cname_depth, []) do
@@ -655,6 +678,85 @@ defmodule ExDns.Resolver.Default do
       :internet -> %{record | class: :in}
       _ -> record
     end
+  end
+
+  # ----- ANY-query helpers ----------------------------------------
+
+  defp do_answer_any(message, qname) do
+    case Storage.lookup_any(qname) do
+      {:ok, _apex, records} ->
+        records = Enum.map(records, &normalize_class/1)
+        set_response(message, records, rcode: 0, aa: 1, authority: [])
+
+      {:error, :nxdomain} ->
+        case Storage.find_zone(qname) do
+          nil ->
+            set_response(message, [], rcode: 3, aa: 0, authority: [])
+
+          apex ->
+            set_response(message, [], rcode: 3, aa: 1,
+              authority: negative_authority(apex, qname, :nxdomain))
+        end
+    end
+  end
+
+  defp refuse_any? do
+    Application.get_env(:ex_dns, :refuse_any, false)
+  end
+
+  # ----- UPDATE handling (RFC 2136) ---------------------------------
+
+  defp handle_update(%Message{question: %Question{host: apex, class: class}} = message, source_ip) do
+    apex_norm = String.downcase(apex, :ascii) |> String.trim_trailing(".")
+
+    cond do
+      # Step 1 — ACL.
+      ExDns.Update.ACL.check(apex_norm, source_ip, nil) == :refuse ->
+        update_response(message, 5)
+
+      # Step 2 — we must own the apex (RFC 2136 §3.1: NOTAUTH
+      # otherwise).
+      Storage.find_zone(apex_norm) != apex_norm ->
+        update_response(message, 9)
+
+      true ->
+        # Step 3 — prerequisites (Answer section per §2.4).
+        with :ok <- ExDns.Update.Prerequisites.check(apex_norm, message.answer, class),
+             # Step 4 — apply the updates (Authority section per §2.5).
+             :ok <- ExDns.Update.Applier.apply(message.authority, apex_norm, class) do
+          update_response(message, 0)
+        else
+          {:error, rcode} -> update_response(message, rcode)
+        end
+    end
+  end
+
+  defp handle_update(message, _source_ip) do
+    update_response(message, 5)
+  end
+
+  # Build the standard UPDATE response: header echoed with
+  # QR=1, OPCODE=5, the given RCODE, all sections empty.
+  defp update_response(%Message{header: %Header{} = header} = message, rcode) do
+    %Message{
+      message
+      | header: %Header{
+          header
+          | qr: 1,
+            aa: 0,
+            tc: 0,
+            ra: 0,
+            ad: 0,
+            cd: 0,
+            rc: rcode,
+            anc: 0,
+            auc: 0,
+            adc: 0
+        },
+        answer: [],
+        authority: [],
+        additional: []
+    }
   end
 
   # ----- IXFR helpers (RFC 1995) ------------------------------------
