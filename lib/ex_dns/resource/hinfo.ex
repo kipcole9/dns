@@ -18,6 +18,7 @@ defmodule ExDns.Resource.HINFO do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :cpu, :os]
 
@@ -68,4 +69,17 @@ defmodule ExDns.Resource.HINFO do
       ExDns.Resource.HINFO.format(resource)
     end
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{cpu: cpu, os: os}) do
+    %{"cpu" => cpu || "", "os" => os || ""}
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{"cpu" => cpu, "os" => os})
+      when is_binary(cpu) and is_binary(os) do
+    {:ok, %__MODULE__{cpu: cpu, os: os}}
+  end
+
+  def decode_rdata(_), do: {:error, :invalid_hinfo_rdata}
 end

@@ -19,6 +19,7 @@ defmodule ExDns.Resource.A do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :ipv4]
 
@@ -107,4 +108,19 @@ defmodule ExDns.Resource.A do
       ExDns.Resource.A.format(resource)
     end
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{ipv4: {a, b, c, d}}) do
+    %{"ipv4" => "#{a}.#{b}.#{c}.#{d}"}
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{"ipv4" => string}) when is_binary(string) do
+    case :inet.parse_ipv4_address(String.to_charlist(string)) do
+      {:ok, ipv4} -> {:ok, %__MODULE__{ipv4: ipv4}}
+      {:error, _} -> {:error, :invalid_ipv4}
+    end
+  end
+
+  def decode_rdata(_), do: {:error, :missing_ipv4}
 end

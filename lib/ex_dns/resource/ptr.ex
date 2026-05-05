@@ -17,6 +17,7 @@ defmodule ExDns.Resource.PTR do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :pointer]
 
@@ -76,4 +77,19 @@ defmodule ExDns.Resource.PTR do
       ExDns.Resource.PTR.format(resource)
     end
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{pointer: pointer}) do
+    %{"pointer" => trim_dot(pointer)}
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{"pointer" => pointer}) when is_binary(pointer) do
+    {:ok, %__MODULE__{pointer: pointer}}
+  end
+
+  def decode_rdata(_), do: {:error, :missing_pointer}
+
+  defp trim_dot(nil), do: nil
+  defp trim_dot(s) when is_binary(s), do: String.trim_trailing(s, ".")
 end

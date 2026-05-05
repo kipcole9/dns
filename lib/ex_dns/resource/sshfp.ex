@@ -19,6 +19,7 @@ defmodule ExDns.Resource.SSHFP do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :algorithm, :fp_type, :fingerprint]
 
@@ -65,4 +66,28 @@ defmodule ExDns.Resource.SSHFP do
   defimpl ExDns.Resource.Format do
     def format(resource), do: ExDns.Resource.SSHFP.format(resource)
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{} = sshfp) do
+    %{
+      "algorithm" => sshfp.algorithm,
+      "fingerprint_type" => sshfp.fp_type,
+      "fingerprint" => Base.encode16(sshfp.fingerprint || <<>>, case: :lower)
+    }
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{
+        "algorithm" => algorithm,
+        "fingerprint_type" => fp_type,
+        "fingerprint" => fp_hex
+      })
+      when is_integer(algorithm) and is_integer(fp_type) and is_binary(fp_hex) do
+    case Base.decode16(fp_hex, case: :mixed) do
+      {:ok, fp} -> {:ok, %__MODULE__{algorithm: algorithm, fp_type: fp_type, fingerprint: fp}}
+      :error -> {:error, :invalid_fingerprint_hex}
+    end
+  end
+
+  def decode_rdata(_), do: {:error, :invalid_sshfp_rdata}
 end

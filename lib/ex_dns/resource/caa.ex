@@ -23,6 +23,7 @@ defmodule ExDns.Resource.CAA do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :flags, :tag, :value]
 
@@ -74,4 +75,17 @@ defmodule ExDns.Resource.CAA do
   defimpl ExDns.Resource.Format do
     def format(resource), do: ExDns.Resource.CAA.format(resource)
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{flags: flags, tag: tag, value: value}) do
+    %{"flags" => flags, "tag" => tag, "value" => value}
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{"flags" => flags, "tag" => tag, "value" => value})
+      when is_integer(flags) and is_binary(tag) and is_binary(value) do
+    {:ok, %__MODULE__{flags: flags, tag: tag, value: value}}
+  end
+
+  def decode_rdata(_), do: {:error, :invalid_caa_rdata}
 end

@@ -24,6 +24,7 @@ defmodule ExDns.Resource.SRV do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :priority, :weight, :port, :target]
 
@@ -97,4 +98,30 @@ defmodule ExDns.Resource.SRV do
       ExDns.Resource.SRV.format(resource)
     end
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{priority: p, weight: w, port: port, target: target}) do
+    %{
+      "priority" => p,
+      "weight" => w,
+      "port" => port,
+      "target" => trim_dot(target)
+    }
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{
+        "priority" => p,
+        "weight" => w,
+        "port" => port,
+        "target" => target
+      })
+      when is_integer(p) and is_integer(w) and is_integer(port) and is_binary(target) do
+    {:ok, %__MODULE__{priority: p, weight: w, port: port, target: target}}
+  end
+
+  def decode_rdata(_), do: {:error, :invalid_srv_rdata}
+
+  defp trim_dot(nil), do: nil
+  defp trim_dot(s) when is_binary(s), do: String.trim_trailing(s, ".")
 end

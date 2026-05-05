@@ -20,6 +20,7 @@ defmodule ExDns.Resource.MX do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :priority, :server]
 
@@ -105,4 +106,20 @@ defmodule ExDns.Resource.MX do
       ExDns.Resource.MX.format(resource)
     end
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{priority: priority, server: server}) do
+    %{"priority" => priority, "server" => trim_dot(server)}
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{"priority" => priority, "server" => server})
+      when is_integer(priority) and is_binary(server) do
+    {:ok, %__MODULE__{priority: priority, server: server}}
+  end
+
+  def decode_rdata(_), do: {:error, :invalid_mx_rdata}
+
+  defp trim_dot(nil), do: nil
+  defp trim_dot(s) when is_binary(s), do: String.trim_trailing(s, ".")
 end

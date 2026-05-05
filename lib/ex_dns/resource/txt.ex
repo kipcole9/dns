@@ -19,6 +19,7 @@ defmodule ExDns.Resource.TXT do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, strings: []]
 
@@ -93,4 +94,20 @@ defmodule ExDns.Resource.TXT do
       ExDns.Resource.TXT.format(resource)
     end
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{strings: strings}) do
+    %{"strings" => strings || []}
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{"strings" => strings}) when is_list(strings) do
+    if Enum.all?(strings, &is_binary/1) do
+      {:ok, %__MODULE__{strings: strings}}
+    else
+      {:error, :strings_must_be_binaries}
+    end
+  end
+
+  def decode_rdata(_), do: {:error, :missing_strings}
 end

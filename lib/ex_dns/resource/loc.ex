@@ -20,6 +20,7 @@ defmodule ExDns.Resource.LOC do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [
     :name,
@@ -80,5 +81,30 @@ defmodule ExDns.Resource.LOC do
 
   defimpl ExDns.Resource.Format do
     def format(resource), do: ExDns.Resource.LOC.format(resource)
+  end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{} = loc) do
+    %{
+      "version" => loc.version,
+      "size" => loc.size,
+      "horiz_pre" => loc.horiz_pre,
+      "vert_pre" => loc.vert_pre,
+      "latitude" => loc.latitude,
+      "longitude" => loc.longitude,
+      "altitude" => loc.altitude
+    }
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{} = map) do
+    fields =
+      for key <- ["version", "size", "horiz_pre", "vert_pre",
+                  "latitude", "longitude", "altitude"],
+          into: %{} do
+        {String.to_atom(key), Map.get(map, key, 0)}
+      end
+
+    {:ok, struct(__MODULE__, fields)}
   end
 end

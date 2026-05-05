@@ -20,6 +20,7 @@ defmodule ExDns.Resource.TLSA do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :cert_usage, :selector, :matching_type, :cert_data]
 
@@ -63,4 +64,40 @@ defmodule ExDns.Resource.TLSA do
   defimpl ExDns.Resource.Format do
     def format(resource), do: ExDns.Resource.TLSA.format(resource)
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{} = tlsa) do
+    %{
+      "usage" => tlsa.cert_usage,
+      "selector" => tlsa.selector,
+      "matching" => tlsa.matching_type,
+      "data" => Base.encode16(tlsa.cert_data || <<>>, case: :lower)
+    }
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{
+        "usage" => usage,
+        "selector" => selector,
+        "matching" => matching,
+        "data" => data_hex
+      })
+      when is_integer(usage) and is_integer(selector) and is_integer(matching) and
+             is_binary(data_hex) do
+    case Base.decode16(data_hex, case: :mixed) do
+      {:ok, data} ->
+        {:ok,
+         %__MODULE__{
+           cert_usage: usage,
+           selector: selector,
+           matching_type: matching,
+           cert_data: data
+         }}
+
+      :error ->
+        {:error, :invalid_data_hex}
+    end
+  end
+
+  def decode_rdata(_), do: {:error, :invalid_tlsa_rdata}
 end

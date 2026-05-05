@@ -20,6 +20,7 @@ defmodule ExDns.Resource.NSEC do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :next_domain, :type_bit_maps]
 
@@ -49,4 +50,24 @@ defmodule ExDns.Resource.NSEC do
   defimpl ExDns.Resource.Format do
     def format(resource), do: ExDns.Resource.NSEC.format(resource)
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{next_domain: next, type_bit_maps: bitmap}) do
+    %{
+      "next_domain" => trim_dot(next),
+      "types" => stringify_types(bitmap)
+    }
+  end
+
+  defp stringify_types(types) when is_list(types) do
+    Enum.map(types, fn
+      atom when is_atom(atom) -> atom |> Atom.to_string() |> String.upcase()
+      other -> to_string(other)
+    end)
+  end
+
+  defp stringify_types(_), do: []
+
+  defp trim_dot(nil), do: nil
+  defp trim_dot(s) when is_binary(s), do: String.trim_trailing(s, ".")
 end

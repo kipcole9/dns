@@ -17,6 +17,7 @@ defmodule ExDns.Resource.CNAME do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :server]
 
@@ -99,4 +100,19 @@ defmodule ExDns.Resource.CNAME do
       ExDns.Resource.CNAME.format(resource)
     end
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{server: target}) do
+    %{"target" => trim_dot(target)}
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{"target" => target}) when is_binary(target) do
+    {:ok, %__MODULE__{server: target}}
+  end
+
+  def decode_rdata(_), do: {:error, :missing_target}
+
+  defp trim_dot(nil), do: nil
+  defp trim_dot(s) when is_binary(s), do: String.trim_trailing(s, ".")
 end

@@ -32,6 +32,7 @@ defmodule ExDns.Resource.SOA do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [
     :name,
@@ -153,4 +154,48 @@ defmodule ExDns.Resource.SOA do
       ExDns.Resource.SOA.format(resource)
     end
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{} = soa) do
+    %{
+      "mname" => trim_dot(soa.mname),
+      "rname" => format_email(soa.email),
+      "serial" => soa.serial,
+      "refresh" => soa.refresh,
+      "retry" => soa.retry,
+      "expire" => soa.expire,
+      "minimum" => soa.minimum
+    }
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{} = map) do
+    with mname when is_binary(mname) <- Map.get(map, "mname"),
+         rname when is_binary(rname) <- Map.get(map, "rname"),
+         serial when is_integer(serial) <- Map.get(map, "serial"),
+         refresh when is_integer(refresh) <- Map.get(map, "refresh"),
+         retry when is_integer(retry) <- Map.get(map, "retry"),
+         expire when is_integer(expire) <- Map.get(map, "expire"),
+         minimum when is_integer(minimum) <- Map.get(map, "minimum") do
+      {:ok,
+       %__MODULE__{
+         mname: mname,
+         email: rname,
+         serial: serial,
+         refresh: refresh,
+         retry: retry,
+         expire: expire,
+         minimum: minimum
+       }}
+    else
+      _ -> {:error, :invalid_soa_rdata}
+    end
+  end
+
+  defp trim_dot(nil), do: nil
+  defp trim_dot(s) when is_binary(s), do: String.trim_trailing(s, ".")
+
+  defp format_email({:hostname, name}) when is_binary(name), do: trim_dot(name)
+  defp format_email(name) when is_binary(name), do: trim_dot(name)
+  defp format_email(_), do: nil
 end

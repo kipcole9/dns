@@ -9,6 +9,7 @@ defmodule ExDns.Resource.HTTPS do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :priority, :target, params: []]
 
@@ -41,5 +42,10 @@ defmodule ExDns.Resource.HTTPS do
 
   defimpl ExDns.Resource.Format do
     def format(resource), do: ExDns.Resource.HTTPS.format(resource)
+  end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{priority: priority, target: target, params: params}) do
+    SVCB.encode_rdata(%SVCB{priority: priority, target: target, params: params})
   end
 end

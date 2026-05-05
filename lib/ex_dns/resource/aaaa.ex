@@ -12,6 +12,7 @@ defmodule ExDns.Resource.AAAA do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :ipv6]
 
@@ -101,4 +102,19 @@ defmodule ExDns.Resource.AAAA do
       ExDns.Resource.AAAA.format(resource)
     end
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{ipv6: ipv6}) do
+    %{"ipv6" => ipv6 |> :inet.ntoa() |> to_string()}
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{"ipv6" => string}) when is_binary(string) do
+    case :inet.parse_ipv6_address(String.to_charlist(string)) do
+      {:ok, ipv6} -> {:ok, %__MODULE__{ipv6: ipv6}}
+      {:error, _} -> {:error, :invalid_ipv6}
+    end
+  end
+
+  def decode_rdata(_), do: {:error, :missing_ipv6}
 end

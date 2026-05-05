@@ -19,6 +19,7 @@ defmodule ExDns.Resource.NSEC3 do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [
     :name,
@@ -83,4 +84,26 @@ defmodule ExDns.Resource.NSEC3 do
   defimpl ExDns.Resource.Format do
     def format(resource), do: ExDns.Resource.NSEC3.format(resource)
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{} = nsec3) do
+    %{
+      "hash_algorithm" => nsec3.hash_algorithm,
+      "flags" => nsec3.flags,
+      "iterations" => nsec3.iterations,
+      "salt" => Base.encode16(nsec3.salt || <<>>, case: :lower),
+      "next_hashed_owner" =>
+        Base.hex_encode32(nsec3.next_hashed_owner || <<>>, padding: false, case: :lower),
+      "types" => stringify_types(nsec3.type_bit_maps)
+    }
+  end
+
+  defp stringify_types(types) when is_list(types) do
+    Enum.map(types, fn
+      atom when is_atom(atom) -> atom |> Atom.to_string() |> String.upcase()
+      other -> to_string(other)
+    end)
+  end
+
+  defp stringify_types(_), do: []
 end

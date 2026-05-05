@@ -54,7 +54,8 @@ defmodule ExDns.Application do
         admin_children() ++
         secondary_zone_children() ++
         snapshot_children() ++
-        catalog_subscription_children()
+        catalog_subscription_children() ++
+        api_children()
 
     opts = [strategy: :one_for_one, name: ExDns.Supervisor]
 
@@ -158,6 +159,38 @@ defmodule ExDns.Application do
       [ExDns.Zone.Snapshot.Writer]
     else
       []
+    end
+  end
+
+  # Bandit listener for the public `/api/v1/*` surface (the
+  # contract documented in `priv/openapi/v1.yaml`). Off by
+  # default. Bound to `127.0.0.1` unless the operator overrides
+  # — the API exposes operational control and should sit behind
+  # a TLS proxy when reachable from the network.
+  defp api_children do
+    case Application.get_env(:ex_dns, :api) do
+      list when is_list(list) ->
+        if Keyword.get(list, :enabled, false) do
+          port = Keyword.get(list, :port, 9571)
+          ip = Keyword.get(list, :bind, {127, 0, 0, 1})
+
+          [
+            ExDns.API.Events,
+            Supervisor.child_spec(
+              {Bandit,
+               plug: ExDns.API.Router,
+               scheme: :http,
+               port: port,
+               thousand_island_options: [transport_options: [ip: ip]]},
+              id: ExDns.API.Router
+            )
+          ]
+        else
+          []
+        end
+
+      _ ->
+        []
     end
   end
 

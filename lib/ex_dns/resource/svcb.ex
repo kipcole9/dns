@@ -25,6 +25,7 @@ defmodule ExDns.Resource.SVCB do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :priority, :target, params: []]
 
@@ -84,4 +85,31 @@ defmodule ExDns.Resource.SVCB do
   defimpl ExDns.Resource.Format do
     def format(resource), do: ExDns.Resource.SVCB.format(resource)
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{} = svcb) do
+    %{
+      "priority" => svcb.priority,
+      "target" => trim_dot(svcb.target),
+      "params" => stringify_params(svcb.params)
+    }
+  end
+
+  defp stringify_params(params) when is_list(params) do
+    Enum.map(params, fn
+      {key, value} when is_binary(value) ->
+        %{"key" => to_string(key), "value" => value}
+
+      {key, value} ->
+        %{"key" => to_string(key), "value" => inspect(value)}
+
+      other ->
+        %{"raw" => inspect(other)}
+    end)
+  end
+
+  defp stringify_params(_), do: []
+
+  defp trim_dot(nil), do: nil
+  defp trim_dot(s) when is_binary(s), do: String.trim_trailing(s, ".")
 end

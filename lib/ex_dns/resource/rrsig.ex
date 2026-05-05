@@ -23,6 +23,7 @@ defmodule ExDns.Resource.RRSIG do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [
     :name,
@@ -107,4 +108,25 @@ defmodule ExDns.Resource.RRSIG do
   defimpl Resource.Format do
     def format(resource), do: ExDns.Resource.RRSIG.format(resource)
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{} = rrsig) do
+    %{
+      "type_covered" => stringify_type(rrsig.type_covered),
+      "algorithm" => rrsig.algorithm,
+      "labels" => rrsig.labels,
+      "original_ttl" => rrsig.original_ttl,
+      "expiration" => rrsig.signature_expiration,
+      "inception" => rrsig.signature_inception,
+      "key_tag" => rrsig.key_tag,
+      "signer" => trim_dot(rrsig.signer),
+      "signature" => Base.encode64(rrsig.signature || <<>>)
+    }
+  end
+
+  defp stringify_type(atom) when is_atom(atom), do: atom |> Atom.to_string() |> String.upcase()
+  defp stringify_type(other), do: to_string(other)
+
+  defp trim_dot(nil), do: nil
+  defp trim_dot(s) when is_binary(s), do: String.trim_trailing(s, ".")
 end

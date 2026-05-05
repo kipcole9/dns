@@ -20,6 +20,7 @@ defmodule ExDns.Resource.NAPTR do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [
     :name,
@@ -95,4 +96,46 @@ defmodule ExDns.Resource.NAPTR do
   defimpl ExDns.Resource.Format do
     def format(resource), do: ExDns.Resource.NAPTR.format(resource)
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{} = naptr) do
+    %{
+      "order" => naptr.order,
+      "preference" => naptr.preference,
+      "flags" => naptr.flags,
+      "services" => naptr.services,
+      "regexp" => naptr.regexp,
+      "replacement" => trim_dot(naptr.replacement)
+    }
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{
+        "order" => order,
+        "preference" => preference,
+        "flags" => flags,
+        "services" => services,
+        "regexp" => regexp,
+        "replacement" => replacement
+      })
+      when is_integer(order) and is_integer(preference) and is_binary(flags) and
+             is_binary(services) and is_binary(regexp) and is_binary(replacement) do
+    {:ok,
+     %__MODULE__{
+       order: order,
+       preference: preference,
+       flags: flags,
+       services: services,
+       regexp: regexp,
+       replacement: replacement
+     }}
+  end
+
+  def decode_rdata(_), do: {:error, :invalid_naptr_rdata}
+
+  defp trim_dot(nil), do: nil
+  # The literal "." replacement is meaningful in NAPTR — it means
+  # "no further replacement; use the regexp". Don't trim it away.
+  defp trim_dot("."), do: "."
+  defp trim_dot(s) when is_binary(s), do: String.trim_trailing(s, ".")
 end

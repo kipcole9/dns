@@ -1,0 +1,429 @@
+openapi: 3.1.0
+info:
+  title: ExDns Admin API
+  version: 1.0.0
+  description: |
+    Operator-facing HTTP API for the ExDns DNS server. The API is the
+    *only* coupling between the server and any client (the bundled web
+    UI, `curl`, internal admin portals, automation). The contract is
+    versioned — additive changes do not bump the major; breaking
+    changes cut a new `/api/v2`.
+
+    Authentication is a bearer token on every endpoint. Tokens are
+    issued by `mix exdns.token.issue --role <role> --scopes <globs>`
+    and stored in the server-local keystore. Roles enforce per-route
+    capability:
+
+      * `viewer` — read-only on every endpoint.
+      * `zone_admin` — read on every endpoint, write on records +
+        zone reload + secondary triggers, scoped to the zone-name
+        globs the token was issued for.
+      * `cluster_admin` — full surface, no scope restriction.
+
+  contact:
+    name: ExDns
+    url: https://github.com/anthropics/ex_dns
+
+servers:
+  - url: http://127.0.0.1:9570
+    description: Default localhost binding
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: server
+    description: Server identity, version, listener bindings, cluster nodes.
+  - name: zones
+    description: Zone inventory and per-zone records.
+  - name: keys
+    description: DNSSEC key inventory and rollover wizard.
+  - name: secondaries
+    description: Secondary-zone state machines.
+  - name: plugins
+    description: Plugin registry — installed plugins, UI tabs, enable/disable.
+  - name: metrics
+    description: Time-bucketed observability summaries.
+  - name: events
+    description: Server-Sent Events stream for live updates.
+  - name: probes
+    description: Liveness and readiness probes.
+
+paths:
+  /api/v1/server:
+    get:
+      tags: [server]
+      summary: Server identity, version, listener bindings, cluster nodes.
+      operationId: getServer
+      responses:
+        '200':
+          description: Server info.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Server'
+
+  /api/v1/zones:
+    get:
+      tags: [zones]
+      summary: List zones.
+      operationId: listZones
+      responses:
+        '200':
+          description: Zone inventory.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [zones]
+                properties:
+                  zones:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ZoneSummary'
+
+  /api/v1/zones/{apex}:
+    get:
+      tags: [zones]
+      summary: Zone metadata + counts by record type.
+      operationId: getZone
+      parameters:
+        - $ref: '#/components/parameters/Apex'
+      responses:
+        '200':
+          description: Zone details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Zone'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/zones/{apex}/records:
+    get:
+      tags: [zones]
+      summary: Paginated record listing for a zone.
+      operationId: listRecords
+      parameters:
+        - $ref: '#/components/parameters/Apex'
+        - in: query
+          name: type
+          description: Filter by record type (e.g. `A`, `MX`).
+          schema:
+            type: string
+        - in: query
+          name: name
+          description: Filter by owner-name substring (case-insensitive).
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Records.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [records, total]
+                properties:
+                  total:
+                    type: integer
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Record'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/secondaries/{apex}:
+    get:
+      tags: [secondaries]
+      summary: Secondary state machine snapshot.
+      operationId: getSecondary
+      parameters:
+        - $ref: '#/components/parameters/Apex'
+      responses:
+        '200':
+          description: Snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecondarySnapshot'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/keys:
+    get:
+      tags: [keys]
+      summary: DNSSEC key inventory.
+      operationId: listKeys
+      responses:
+        '200':
+          description: Keys.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DnssecKey'
+
+  /api/v1/plugins:
+    get:
+      tags: [plugins]
+      summary: Plugin registry — slug, node, version, healthy?, UI metadata.
+      operationId: listPlugins
+      responses:
+        '200':
+          description: Plugins.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plugins]
+                properties:
+                  plugins:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Plugin'
+
+  /api/v1/metrics/summary:
+    get:
+      tags: [metrics]
+      summary: Time-bucketed query rate, RRL drops, cache hit ratio, validation outcomes.
+      operationId: getMetricsSummary
+      parameters:
+        - in: query
+          name: window_seconds
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 3600
+            default: 60
+      responses:
+        '200':
+          description: Summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsSummary'
+
+  /api/v1/events:
+    get:
+      tags: [events]
+      summary: Server-Sent Events stream of live server events.
+      description: |
+        text/event-stream. Each event has a `type` (one of `zone.reloaded`,
+        `secondary.state_changed`, `plugin.registered`, `plugin.unregistered`,
+        `dnssec.rollover.advanced`) and a JSON `data` payload.
+      operationId: streamEvents
+      responses:
+        '200':
+          description: Event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/v1/health:
+    get:
+      tags: [probes]
+      summary: Liveness probe.
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: Alive.
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /api/v1/ready:
+    get:
+      tags: [probes]
+      summary: Readiness probe.
+      operationId: getReady
+      security: []
+      responses:
+        '200':
+          description: Ready.
+          content:
+            text/plain:
+              schema: { type: string }
+        '503':
+          description: Not ready.
+          content:
+            text/plain:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+
+  parameters:
+    Apex:
+      in: path
+      name: apex
+      required: true
+      schema:
+        type: string
+      description: Zone apex (case-insensitive, trailing dot optional).
+
+  responses:
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        details: { type: object }
+
+    Server:
+      type: object
+      required: [identity, version, listeners, cluster]
+      properties:
+        identity: { type: string, description: NSID identifier. }
+        version: { type: string }
+        listeners:
+          type: array
+          items: { $ref: '#/components/schemas/Listener' }
+        cluster:
+          type: object
+          required: [nodes, master]
+          properties:
+            nodes:
+              type: array
+              items: { type: string }
+            master: { type: string, nullable: true }
+
+    Listener:
+      type: object
+      required: [transport, address, port]
+      properties:
+        transport: { type: string, enum: [udp, tcp, dot, doh, doq] }
+        address: { type: string }
+        port: { type: integer }
+
+    ZoneSummary:
+      type: object
+      required: [apex, serial, kind]
+      properties:
+        apex: { type: string }
+        serial: { type: integer, nullable: true }
+        kind:
+          type: string
+          enum: [primary, secondary, catalog]
+        source: { type: string, nullable: true }
+
+    Zone:
+      allOf:
+        - $ref: '#/components/schemas/ZoneSummary'
+        - type: object
+          required: [counts]
+          properties:
+            counts:
+              type: object
+              additionalProperties:
+                type: integer
+
+    Record:
+      type: object
+      required: [name, type, ttl, class, rdata]
+      properties:
+        id: { type: string, description: Stable id for PATCH/DELETE. }
+        name: { type: string }
+        type: { type: string }
+        ttl: { type: integer }
+        class: { type: string, enum: [IN, CH, HS] }
+        rdata: { type: object, description: Type-specific JSON object. }
+
+    SecondarySnapshot:
+      type: object
+      required: [apex, state]
+      properties:
+        apex: { type: string }
+        state: { type: string, enum: [initial, loaded] }
+        serial: { type: integer, nullable: true }
+        last_success_unix: { type: integer, nullable: true }
+        tsig_key: { type: string, nullable: true }
+
+    DnssecKey:
+      type: object
+      required: [zone, role, algorithm, key_tag]
+      properties:
+        zone: { type: string }
+        role: { type: string, enum: [zsk, ksk] }
+        algorithm: { type: integer }
+        key_tag: { type: integer }
+        state: { type: string, enum: [active, retired, prepublished, removed] }
+
+    Plugin:
+      type: object
+      required: [slug, name, version, enabled, healthy]
+      properties:
+        slug: { type: string }
+        name: { type: string }
+        version: { type: string }
+        node: { type: string, nullable: true }
+        enabled: { type: boolean }
+        healthy: { type: boolean }
+        ui:
+          type: object
+          nullable: true
+          properties:
+            title: { type: string }
+            resources:
+              type: array
+              items: { type: string }
+
+    MetricsSummary:
+      type: object
+      required: [window_seconds, queries, rrl_drops, cache_hits, dnssec]
+      properties:
+        window_seconds: { type: integer }
+        queries:
+          type: object
+          additionalProperties:
+            type: integer
+        rrl_drops: { type: integer }
+        cache_hits:
+          type: object
+          required: [hit, miss]
+          properties:
+            hit: { type: integer }
+            miss: { type: integer }
+        dnssec:
+          type: object
+          additionalProperties:
+            type: integer

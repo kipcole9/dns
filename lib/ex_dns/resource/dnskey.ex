@@ -20,6 +20,7 @@ defmodule ExDns.Resource.DNSKEY do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :flags, :protocol, :algorithm, :public_key]
 
@@ -63,4 +64,40 @@ defmodule ExDns.Resource.DNSKEY do
   defimpl ExDns.Resource.Format do
     def format(resource), do: ExDns.Resource.DNSKEY.format(resource)
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{} = key) do
+    %{
+      "flags" => key.flags,
+      "protocol" => key.protocol,
+      "algorithm" => key.algorithm,
+      "public_key" => Base.encode64(key.public_key || <<>>)
+    }
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{
+        "flags" => flags,
+        "protocol" => protocol,
+        "algorithm" => algorithm,
+        "public_key" => public_key_b64
+      })
+      when is_integer(flags) and is_integer(protocol) and is_integer(algorithm) and
+             is_binary(public_key_b64) do
+    case Base.decode64(public_key_b64) do
+      {:ok, public_key} ->
+        {:ok,
+         %__MODULE__{
+           flags: flags,
+           protocol: protocol,
+           algorithm: algorithm,
+           public_key: public_key
+         }}
+
+      :error ->
+        {:error, :invalid_public_key_base64}
+    end
+  end
+
+  def decode_rdata(_), do: {:error, :invalid_dnskey_rdata}
 end

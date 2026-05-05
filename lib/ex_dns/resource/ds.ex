@@ -20,6 +20,7 @@ defmodule ExDns.Resource.DS do
   """
 
   @behaviour ExDns.Resource
+  @behaviour ExDns.Resource.JSON
 
   defstruct [:name, :ttl, :class, :key_tag, :algorithm, :digest_type, :digest]
 
@@ -63,4 +64,40 @@ defmodule ExDns.Resource.DS do
   defimpl ExDns.Resource.Format do
     def format(resource), do: ExDns.Resource.DS.format(resource)
   end
+
+  @impl ExDns.Resource.JSON
+  def encode_rdata(%__MODULE__{} = ds) do
+    %{
+      "key_tag" => ds.key_tag,
+      "algorithm" => ds.algorithm,
+      "digest_type" => ds.digest_type,
+      "digest" => Base.encode16(ds.digest || <<>>, case: :lower)
+    }
+  end
+
+  @impl ExDns.Resource.JSON
+  def decode_rdata(%{
+        "key_tag" => key_tag,
+        "algorithm" => algorithm,
+        "digest_type" => digest_type,
+        "digest" => digest_hex
+      })
+      when is_integer(key_tag) and is_integer(algorithm) and is_integer(digest_type) and
+             is_binary(digest_hex) do
+    case Base.decode16(digest_hex, case: :mixed) do
+      {:ok, digest} ->
+        {:ok,
+         %__MODULE__{
+           key_tag: key_tag,
+           algorithm: algorithm,
+           digest_type: digest_type,
+           digest: digest
+         }}
+
+      :error ->
+        {:error, :invalid_digest_hex}
+    end
+  end
+
+  def decode_rdata(_), do: {:error, :invalid_ds_rdata}
 end
