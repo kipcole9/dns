@@ -191,6 +191,91 @@ defmodule ExDns.API.Router do
     end
   end
 
+  # First-run zone-creation helper. The Tier 2 zone wizard
+  # in the Web UI POSTs here with `ns_ip` (and optional
+  # IPv6/apex) to scaffold an authoritative zone end-to-end:
+  # write a zone file, parse it, load into Storage. Operators
+  # who write their own zone files don't go through this
+  # endpoint at all.
+  post "/api/v1/zones/:apex" do
+    conn =
+      conn
+      |> auth()
+      |> Auth.require_role(:cluster_admin)
+
+    if conn.halted do
+      conn
+    else
+      params = conn.body_params
+
+      case ExDns.Zone.Bootstrap.create_authoritative_zone(apex,
+             ns_ip: params["ns_ip"],
+             ns_ipv6: params["ns_ipv6"],
+             apex_ip: params["apex_ip"],
+             apex_ipv6: params["apex_ipv6"],
+             contact: params["contact"]
+           ) do
+        {:ok, result} ->
+          respond(conn, 201, %{
+            "apex" => result.apex,
+            "path" => result.path
+          })
+
+        {:error, reason} ->
+          respond(conn, 422, %{"error" => "could not create zone: #{inspect(reason)}"})
+      end
+    end
+  end
+
+  # Toggle recursion at runtime. Used by the "Resolve DNS
+  # for my LAN" preset in the first-run wizard. Flipping
+  # `:recursion` true here is in-memory only — it survives
+  # this process but not a restart. Operators wanting the
+  # change persistent edit `/etc/exdns/runtime.exs`.
+  put "/api/v1/server/recursion" do
+    conn = conn |> auth() |> Auth.require_role(:cluster_admin)
+
+    if conn.halted do
+      conn
+    else
+      enabled = !!conn.body_params["enabled"]
+      Application.put_env(:ex_dns, :recursion, enabled)
+      respond(conn, 200, %{"recursion" => enabled})
+    end
+  end
+
+  # Pause / unpause / status of the plugin pipeline. The
+  # "big red button" affordance for operators who broke a
+  # plugin and need DNS to keep working while they fix it.
+  get "/api/v1/pause" do
+    conn = conn |> auth() |> Auth.require_role(:zone_admin)
+
+    if conn.halted, do: conn, else: respond(conn, 200, ExDns.PauseMode.status())
+  end
+
+  post "/api/v1/pause" do
+    conn = conn |> auth() |> Auth.require_role(:cluster_admin)
+
+    if conn.halted do
+      conn
+    else
+      duration = parse_pause_duration(conn.body_params["duration"])
+      ExDns.PauseMode.pause(duration)
+      respond(conn, 200, ExDns.PauseMode.status())
+    end
+  end
+
+  delete "/api/v1/pause" do
+    conn = conn |> auth() |> Auth.require_role(:cluster_admin)
+
+    if conn.halted do
+      conn
+    else
+      ExDns.PauseMode.unpause()
+      respond(conn, 200, ExDns.PauseMode.status())
+    end
+  end
+
   post "/api/v1/zones/:apex/reload" do
     conn =
       conn
@@ -424,4 +509,24 @@ defmodule ExDns.API.Router do
   end
 
   defp rollover_options(_), do: []
+
+  # Parse an operator-supplied pause duration. Accepts:
+  #   * `"5m"` / `"1h"` / `"until_unpaused"` shorthand strings
+  #   * a positive integer of seconds
+  #   * `nil` / missing → defaults to 5 minutes
+  defp parse_pause_duration(nil), do: 300
+  defp parse_pause_duration("until_unpaused"), do: :until_unpaused
+  defp parse_pause_duration(:until_unpaused), do: :until_unpaused
+  defp parse_pause_duration(n) when is_integer(n) and n > 0, do: n
+
+  defp parse_pause_duration(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, "m"} when n > 0 -> n * 60
+      {n, "h"} when n > 0 -> n * 3600
+      {n, ""} when n > 0 -> n
+      _ -> 300
+    end
+  end
+
+  defp parse_pause_duration(_), do: 300
 end

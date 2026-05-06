@@ -64,14 +64,25 @@ defmodule ExDns.Resolver.Plugins do
   """
   @spec resolve(Request.t() | Message.t()) :: Message.t() | nil
   def resolve(%Request{} = request) do
-    case Registry.match(request) do
-      {:ok, plugin_module, route} ->
-        emit(:plugin_cont, request, plugin_module)
-        run_plugin(plugin_module, request, route)
-
-      :none ->
-        emit(:passthru, request, nil)
+    cond do
+      ExDns.PauseMode.paused?() ->
+        # Big-red-button: every plugin is bypassed; queries
+        # flow straight to the underlying resolver. The
+        # operator-facing `paused?/0` flag is checked once
+        # per query and is cheap (`:persistent_term`).
+        emit(:passthru, request, :paused)
         defer(request)
+
+      true ->
+        case Registry.match(request) do
+          {:ok, plugin_module, route} ->
+            emit(:plugin_cont, request, plugin_module)
+            run_plugin(plugin_module, request, route)
+
+          :none ->
+            emit(:passthru, request, nil)
+            defer(request)
+        end
     end
   end
 

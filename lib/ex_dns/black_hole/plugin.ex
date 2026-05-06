@@ -271,6 +271,36 @@ defmodule ExDns.BlackHole.Plugin do
     {:ok, %{"truncated" => true}}
   end
 
+  # First-run wizard preset. Called from the UI when the
+  # operator picks "Block ads on my LAN". Optional
+  # `lan_cidrs` overrides the auto-detection; optional
+  # `blocklist_url` overrides the default Steven Black list.
+  def handle_action("enable_for_lan", params) do
+    options =
+      []
+      |> maybe_put(:lan_cidrs, params["lan_cidrs"])
+      |> maybe_put(:blocklist_url, params["blocklist_url"])
+
+    case ExDns.BlackHole.Bootstrap.enable_for_lan(options) do
+      {:ok, result} ->
+        refresh_routes()
+
+        {:ok,
+         %{
+           "cidrs" => result.cidrs,
+           "blocklist_id" => result.blocklist_id,
+           "group_id" => result.group_id
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, _key, []), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
+
   def handle_action(name, _params), do: {:error, {:unknown_action, name}}
 
   defp refresh_routes do
