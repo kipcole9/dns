@@ -73,8 +73,20 @@ defmodule ExDns.Update.TSIG do
     case ExDns.TSIG.verify(wire_bytes) do
       {:ok, _message, key_name} ->
         request_mac = extract_mac(wire_bytes)
-        emit(:verified, %{key_name: key_name})
-        {:ok, key_name, request_mac}
+
+        case ExDns.Update.TSIG.Replay.record(key_name, request_mac) do
+          :ok ->
+            emit(:verified, %{key_name: key_name})
+            {:ok, key_name, request_mac}
+
+          {:error, :replay} ->
+            # An attacker re-sent a previously-accepted UPDATE
+            # inside the TSIG fudge window. The MAC verifies
+            # but the request would re-apply a mutation we've
+            # already applied; refuse it.
+            emit(:rejected, %{reason: :replay, key_name: key_name})
+            {:refuse, :replay}
+        end
 
       {:error, :no_tsig} ->
         if require_tsig?() do

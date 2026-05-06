@@ -92,6 +92,14 @@ defmodule ExDns.Update.TSIGTest do
       assert is_binary(mac) and byte_size(mac) > 0
     end
 
+    test "rejects an exact replay of an already-accepted UPDATE" do
+      ExDns.Update.TSIG.Replay.reset()
+      bytes = signed_wire_bytes()
+
+      assert {:ok, _, _} = UpdateTSIG.verify_request(request_with_bytes(bytes))
+      assert {:refuse, :replay} = UpdateTSIG.verify_request(request_with_bytes(bytes))
+    end
+
     test "returns {:ok, :no_tsig} when the request has no TSIG and policy permits" do
       bytes = Message.encode(update_message())
 

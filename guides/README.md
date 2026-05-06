@@ -48,6 +48,20 @@ Operator-facing guides for installing, deploying, and running ExDns. Read in ord
 * [**10 — Monitoring & observability**](10-monitoring-and-observability.md)
   Health probes, Prometheus metrics, structured logs, dnstap, OpenTelemetry tracing, baseline alerts.
 
+## Runbooks (read cold once a year)
+
+* [**Backup & restore**](runbooks/backup-and-restore.md)
+  What to back up, hourly snapshot script, restore on the same host vs a fresh host vs one node of a cluster.
+
+* [**Disaster recovery**](runbooks/disaster-recovery.md)
+  Decision tree for the bad days. Single-node failure, cluster-wide failure, lost DNSSEC keys, lost token registry.
+
+* [**TLS certificate renewal**](runbooks/tls-certificate-renewal.md)
+  DoT, DoH, admin API. Let's Encrypt + DNS-01 via TSIG-protected dynamic UPDATE.
+
+* [**Planned upgrade**](runbooks/planned-upgrade.md)
+  Single-node and rolling cluster upgrade with zero query downtime. Rollback. Schema migrations.
+
 ## Reference
 
 The authoritative spec for the operator API is the OpenAPI document at [`priv/openapi/v1.yaml`](../priv/openapi/v1.yaml). Every operation in guides 05 and 06 maps to one entry there.

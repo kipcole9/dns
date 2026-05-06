@@ -72,11 +72,17 @@ defmodule ExDns.Cookies.PostProcess do
     end
   end
 
+  # Cookies on by default — RFC 7873 is the cheapest knob
+  # we have for distinguishing real clients from spoofed
+  # ones. The plug only echoes a server cookie back; it does
+  # not yet *enforce* BADCOOKIE on a missing/invalid server
+  # cookie (that's `:enforce`, default off, until operators
+  # have observed cookie adoption in their traffic).
   defp cookies_enabled? do
     case Application.get_env(:ex_dns, :cookies) do
-      nil -> false
-      options when is_list(options) -> Keyword.get(options, :enabled, false)
-      _ -> false
+      nil -> true
+      options when is_list(options) -> Keyword.get(options, :enabled, true)
+      _ -> true
     end
   end
 

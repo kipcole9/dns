@@ -100,8 +100,12 @@ defmodule ExDns.DNSSEC.Signer do
     signed_data = build_signing_data(records, template)
 
     case sign(dnskey.algorithm, signed_data, private_key) do
-      {:ok, raw_signature} -> {:ok, %RRSIG{template | signature: raw_signature}}
-      error -> error
+      {:ok, raw_signature} ->
+        ExDns.DNSSEC.SigningLag.observe(signer, inception)
+        {:ok, %RRSIG{template | signature: raw_signature}}
+
+      error ->
+        error
     end
   end
 

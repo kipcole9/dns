@@ -116,7 +116,18 @@ defmodule ExDns.Zone.Catalog.SubscriptionTest do
     {:ok, pid} = Subscription.start_link(Keyword.merge(base, options))
 
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
+      # The subscription depends on application-supervised
+      # processes (Storage, EKV, Applier). When `on_exit`
+      # fires after a peer test has stopped `:ex_dns`, the
+      # subscription is mid-shutdown and a plain
+      # `GenServer.stop/1` races into "no process". Catch
+      # the exit defensively — the goal of the cleanup is
+      # achieved either way.
+      try do
+        if Process.alive?(pid), do: GenServer.stop(pid, :normal, 100)
+      catch
+        :exit, _ -> :ok
+      end
     end)
 
     pid

@@ -274,7 +274,80 @@ defmodule ExDns.DNSSEC.ValidatorTest do
     end
   end
 
+  describe "verify_rrset/4 — RRSIG validity period (RFC 4035 §5.3.1)" do
+    test "accepts a signature whose window covers the configured `:now`" do
+      {records, rrsig, dnskey} = signed_fixture(inception: 100, expiration: 200)
+
+      assert :ok = Validator.verify_rrset(records, rrsig, dnskey, now: 150)
+    end
+
+    test "rejects a signature whose inception is in the future of `:now`" do
+      {records, rrsig, dnskey} = signed_fixture(inception: 1_000, expiration: 2_000)
+
+      assert {:error, :signature_not_yet_valid} =
+               Validator.verify_rrset(records, rrsig, dnskey, now: 500)
+    end
+
+    test "rejects a signature whose expiration is past `:now`" do
+      {records, rrsig, dnskey} = signed_fixture(inception: 100, expiration: 200)
+
+      assert {:error, :signature_expired} =
+               Validator.verify_rrset(records, rrsig, dnskey, now: 1_000)
+    end
+
+    test "honours `:max_skew_seconds` on both sides of the window" do
+      {records, rrsig, dnskey} = signed_fixture(inception: 100, expiration: 200)
+
+      # 5s before inception, 10s skew → permitted.
+      assert :ok = Validator.verify_rrset(records, rrsig, dnskey, now: 95, max_skew_seconds: 10)
+
+      # 5s after expiration, 10s skew → permitted.
+      assert :ok = Validator.verify_rrset(records, rrsig, dnskey, now: 205, max_skew_seconds: 10)
+
+      # 20s after expiration, 10s skew → still rejected.
+      assert {:error, :signature_expired} =
+               Validator.verify_rrset(records, rrsig, dnskey, now: 220, max_skew_seconds: 10)
+    end
+  end
+
   # ----- helpers ------------------------------------------------------
+
+  # Produce a real signed RRset whose RRSIG carries the requested
+  # inception / expiration timestamps. Used by the validity-period
+  # tests so they exercise the same code path as a normal verify.
+  defp signed_fixture(opts) do
+    inception = Keyword.fetch!(opts, :inception)
+    expiration = Keyword.fetch!(opts, :expiration)
+
+    {public_key, private_key} = :crypto.generate_key(:ecdh, :secp256r1)
+    <<0x04, raw_pubkey::binary-size(64)>> = public_key
+
+    dnskey = %DNSKEY{flags: 256, protocol: 3, algorithm: 13, public_key: raw_pubkey}
+
+    records = [%A{name: "h.example", ttl: 3600, class: :in, ipv4: {1, 2, 3, 4}}]
+
+    template = %RRSIG{
+      name: "h.example",
+      ttl: 3600,
+      class: :in,
+      type_covered: :a,
+      algorithm: 13,
+      labels: 2,
+      original_ttl: 3600,
+      signature_inception: inception,
+      signature_expiration: expiration,
+      key_tag: Validator.key_tag(dnskey),
+      signer: "example",
+      signature: <<>>
+    }
+
+    der =
+      :crypto.sign(:ecdsa, :sha256, build_signing_data(records, template),
+        [private_key, :secp256r1])
+
+    rrsig = %RRSIG{template | signature: der_to_raw(der, 32)}
+    {records, rrsig, dnskey}
+  end
 
   # Build the bytes the signer would feed into HMAC/RSA/ECDSA: the
   # canonical RRSIG signing fields followed by the canonical RRset.

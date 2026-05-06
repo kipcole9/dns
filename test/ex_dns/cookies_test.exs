@@ -122,7 +122,10 @@ defmodule ExDns.CookiesTest do
 
   describe "PostProcess.process/3 (cookies disabled)" do
     test "passes through unchanged when feature flag is off" do
-      Application.delete_env(:ex_dns, :cookies)
+      # Cookies default to enabled (T1.6) — operators opting
+      # out set `enabled: false` explicitly. Make that
+      # explicit here.
+      Application.put_env(:ex_dns, :cookies, enabled: false)
       query = message_with_cookie_option(client_cookie())
       original = empty_response()
       assert ^original = PostProcess.process(query, original, {127, 0, 0, 1})

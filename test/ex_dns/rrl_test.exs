@@ -34,7 +34,9 @@ defmodule ExDns.RRLTest do
   end
 
   test "feature flag off → always :allow" do
-    Application.delete_env(:ex_dns, :rrl)
+    # RRL defaults to enabled (T1.6) — operators opting out
+    # set `enabled: false` explicitly. Make that explicit here.
+    Application.put_env(:ex_dns, :rrl, enabled: false)
 
     Enum.each(1..100, fn _ ->
       assert :allow = RRL.check({1, 2, 3, 4}, "x.test", :a, :answer)

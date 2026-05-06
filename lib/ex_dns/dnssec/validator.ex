@@ -50,18 +50,53 @@ defmodule ExDns.DNSSEC.Validator do
   @doc """
   Verifies an RRset against an RRSIG using a candidate DNSKEY.
 
+  ### Arguments
+
+  * `records` is the RRset being verified.
+
+  * `rrsig` is the `%RRSIG{}` covering the RRset.
+
+  * `dnskey` is the candidate `%DNSKEY{}` whose key tag matches
+    `rrsig.key_tag`.
+
+  ### Options
+
+  * `:now` — current time in seconds since the Unix epoch.
+    Defaults to `System.os_time(:second)`. Override in tests
+    to assert behaviour at specific clock positions.
+
+  * `:max_skew_seconds` — additional clock skew tolerated on
+    both sides of the inception/expiration window (default 0).
+    RFC 4035 §5.3.1 requires the validator to consider the
+    signature invalid when the current time is outside
+    `[inception, expiration]`; this knob lets operators
+    relax the boundary for hosts with imperfect clocks.
+
   ### Returns
 
   * `:ok` — the signature is valid.
-  * `{:error, :wrong_key}` — the DNSKEY's algorithm + key tag don't
-    match the RRSIG's.
-  * `{:error, :unsupported_algorithm}` — algorithm not implemented.
-  * `{:error, :bad_signature}` — the signature does not verify.
+
+  * `{:error, :algorithm_disallowed}` — algorithm forbidden by
+    `ExDns.DNSSEC.AlgorithmPolicy`.
+
+  * `{:error, :wrong_key}` — the DNSKEY's algorithm + key tag
+    don't match the RRSIG's.
+
+  * `{:error, :signature_not_yet_valid}` — current time is
+    earlier than `signature_inception`.
+
+  * `{:error, :signature_expired}` — current time is later than
+    `signature_expiration`.
+
+  * `{:error, :bad_signature}` — the cryptographic signature
+    does not verify.
 
   """
-  @spec verify_rrset([struct()], RRSIG.t(), DNSKEY.t()) ::
+  @spec verify_rrset([struct()], RRSIG.t(), DNSKEY.t(), keyword()) ::
           :ok | {:error, atom()}
-  def verify_rrset(records, %RRSIG{} = rrsig, %DNSKEY{} = dnskey)
+  def verify_rrset(records, rrsig, dnskey, options \\ [])
+
+  def verify_rrset(records, %RRSIG{} = rrsig, %DNSKEY{} = dnskey, options)
       when is_list(records) and records != [] do
     cond do
       not ExDns.DNSSEC.AlgorithmPolicy.validation_allowed?(rrsig.algorithm) ->
@@ -74,7 +109,23 @@ defmodule ExDns.DNSSEC.Validator do
         {:error, :wrong_key}
 
       true ->
-        do_verify_rrset(records, rrsig, dnskey)
+        case check_validity_period(rrsig, options) do
+          :ok -> do_verify_rrset(records, rrsig, dnskey)
+          error -> error
+        end
+    end
+  end
+
+  # RFC 4035 §5.3.1: a signature is invalid when the current
+  # time is outside `[signature_inception, signature_expiration]`.
+  defp check_validity_period(%RRSIG{} = rrsig, options) do
+    now = Keyword.get(options, :now, System.os_time(:second))
+    skew = Keyword.get(options, :max_skew_seconds, 0)
+
+    cond do
+      now + skew < rrsig.signature_inception -> {:error, :signature_not_yet_valid}
+      now - skew > rrsig.signature_expiration -> {:error, :signature_expired}
+      true -> :ok
     end
   end
 

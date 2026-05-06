@@ -35,6 +35,21 @@ defmodule ExDns.Recursor.Cache do
 
   @table :ex_dns_recursor_cache
 
+  # Hard upper bound on cache size. A random-subdomain attack
+  # against the recursor (water torture: query
+  # <random>.<target> for many randoms) would otherwise grow
+  # the table without bound and OOM the BEAM. The default
+  # carries every realistic working set; operators with very
+  # large recursor footprints can raise it via
+  # `:ex_dns, :recursor_cache, [max_entries: 500_000]`.
+  @default_max_entries 100_000
+
+  # When the cap is hit and no expired entries can be reaped,
+  # drop this fraction of the table (closest-to-expiry first).
+  # Bigger fraction → fewer expensive evictions but lumpier
+  # latency; 10% is a sane middle ground.
+  @evict_fraction 0.10
+
   @doc """
   Initialises the cache table. Idempotent. Called from
   `ExDns.Application.start/2`.
@@ -77,6 +92,7 @@ defmodule ExDns.Recursor.Cache do
 
   def put(name, type, records, ttl) when is_integer(ttl) and ttl > 0 do
     init()
+    maybe_evict()
     expires_at = now() + ttl
     :ets.insert(@table, {{normalize(name), type}, :positive, records, expires_at, ttl})
     :ok
@@ -113,6 +129,7 @@ defmodule ExDns.Recursor.Cache do
 
   def put_negative(name, _qtype, :nxdomain, %{} = soa) do
     init()
+    maybe_evict()
     ttl = negative_ttl(soa)
     expires_at = now() + ttl
     :ets.insert(@table, {{normalize(name), :nxdomain}, :nxdomain, soa, expires_at, ttl})
@@ -121,10 +138,60 @@ defmodule ExDns.Recursor.Cache do
 
   def put_negative(name, qtype, :nodata, %{} = soa) do
     init()
+    maybe_evict()
     ttl = negative_ttl(soa)
     expires_at = now() + ttl
     :ets.insert(@table, {{normalize(name), qtype}, :nodata, soa, expires_at, ttl})
     :ok
+  end
+
+  # Cap-the-cache hook called from every `put*`. Cheap when
+  # we are under the cap (single ets:info call); only does
+  # real work when the table is at its limit. The first line
+  # of defence is sweeping expired entries (free wins); only
+  # if the live set is itself over budget do we drop fresh
+  # entries by closest-to-expiry.
+  defp maybe_evict do
+    cap = max_entries()
+
+    if :ets.info(@table, :size) >= cap do
+      reap_expired()
+
+      if :ets.info(@table, :size) >= cap do
+        evict_closest_to_expiry(round(cap * @evict_fraction))
+      end
+    end
+
+    :ok
+  end
+
+  defp reap_expired do
+    cutoff = now()
+
+    :ets.select_delete(@table, [
+      {{:_, :_, :_, :"$1", :_}, [{:"=<", :"$1", cutoff}], [true]}
+    ])
+  end
+
+  # Best-effort eviction: pull every entry out, sort by
+  # `expires_at`, drop the `count` most-soon-to-expire. This
+  # is O(n log n) and only runs on the (rare) `put` that
+  # tips the table over the cap with no expired entries to
+  # reap. For the default 100k-entry cap this is a few tens
+  # of milliseconds; rare enough not to matter.
+  defp evict_closest_to_expiry(count) when count > 0 do
+    @table
+    |> :ets.tab2list()
+    |> Enum.sort_by(fn entry -> elem(entry, 3) end)
+    |> Enum.take(count)
+    |> Enum.each(fn entry -> :ets.delete(@table, elem(entry, 0)) end)
+  end
+
+  defp evict_closest_to_expiry(_), do: :ok
+
+  defp max_entries do
+    Application.get_env(:ex_dns, :recursor_cache, [])
+    |> Keyword.get(:max_entries, @default_max_entries)
   end
 
   @doc """

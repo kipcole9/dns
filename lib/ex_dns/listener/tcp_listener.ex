@@ -61,7 +61,51 @@ defmodule ExDns.Listener.TCP do
 
     @impl ThousandIsland.Handler
     def handle_connection(socket, state) do
-      handle_one(socket, state)
+      {ip, _port} = peer_info(socket)
+
+      case ExDns.Listener.PerIPCap.acquire(ip) do
+        :ok ->
+          # Stash the IP in the process dict — each TI
+          # handler runs in its own process and we want the
+          # close hook to see the IP without complicating
+          # the opaque `state` term TI passes through.
+          Process.put(:ex_dns_ip_cap_ip, ip)
+          handle_one(socket, state)
+
+        {:error, :over_cap} ->
+          Logger.warning(
+            "TCP DNS handler: refusing connection from #{:inet.ntoa(ip)} (per-IP cap)"
+          )
+
+          {:close, state}
+      end
+    end
+
+    @impl ThousandIsland.Handler
+    def handle_close(_socket, _state) do
+      release_ip_slot()
+    end
+
+    @impl ThousandIsland.Handler
+    def handle_error(_reason, _socket, _state) do
+      release_ip_slot()
+    end
+
+    @impl ThousandIsland.Handler
+    def handle_shutdown(_socket, _state) do
+      release_ip_slot()
+    end
+
+    @impl ThousandIsland.Handler
+    def handle_timeout(_socket, _state) do
+      release_ip_slot()
+    end
+
+    defp release_ip_slot do
+      case Process.delete(:ex_dns_ip_cap_ip) do
+        nil -> :ok
+        ip -> ExDns.Listener.PerIPCap.release(ip)
+      end
     end
 
     defp handle_one(socket, state) do

@@ -343,11 +343,11 @@ defmodule ExDns.Message do
           {:ok, binary(), binary()} | {:error, :invalid_name}
 
   def decode_name(binary, message \\ <<>>) do
-    decode_name_labels(binary, [], message)
+    decode_name_labels(binary, [], message, MapSet.new())
   end
 
   # End of name (root). No more labels.
-  defp decode_name_labels(<<0::size(8), rest::binary>>, labels, _message) do
+  defp decode_name_labels(<<0::size(8), rest::binary>>, labels, _message, _visited) do
     {:ok, labels |> Enum.reverse() |> Enum.join("."), rest}
   end
 
@@ -355,38 +355,54 @@ defmodule ExDns.Message do
   defp decode_name_labels(
          <<0::size(2), len::size(6), label::bytes-size(len), rest::binary>>,
          labels,
-         message
+         message,
+         visited
        )
        when len > 0 do
-    decode_name_labels(rest, [label | labels], message)
+    decode_name_labels(rest, [label | labels], message, visited)
   end
 
   # A compression pointer. The pointer is always terminal — anything after
   # the pointer in the current binary belongs to the *next* field, not to
   # the name itself.
-  defp decode_name_labels(<<0b11::size(2), offset::size(14), rest::binary>>, labels, message)
+  #
+  # Loop guard (RFC 1035 §4.1.4): a pointer that targets an offset we have
+  # already followed produces an infinite loop, which a malicious sender
+  # can use to peg one BEAM scheduler thread per packet. We track visited
+  # offsets in `visited` and refuse to revisit one. This handles both
+  # self-references and longer cycles (A → B → A …).
+  defp decode_name_labels(
+         <<0b11::size(2), offset::size(14), rest::binary>>,
+         labels,
+         message,
+         visited
+       )
        when byte_size(message) > offset do
-    <<_skip::bytes-size(^offset), pointed_at::binary>> = message
+    if MapSet.member?(visited, offset) do
+      {:error, :invalid_name}
+    else
+      <<_skip::bytes-size(^offset), pointed_at::binary>> = message
 
-    case decode_name_labels(pointed_at, [], message) do
-      {:ok, suffix, _trailing} ->
-        prefix = labels |> Enum.reverse() |> Enum.join(".")
+      case decode_name_labels(pointed_at, [], message, MapSet.put(visited, offset)) do
+        {:ok, suffix, _trailing} ->
+          prefix = labels |> Enum.reverse() |> Enum.join(".")
 
-        joined =
-          case {prefix, suffix} do
-            {"", suffix} -> suffix
-            {prefix, ""} -> prefix
-            {prefix, suffix} -> prefix <> "." <> suffix
-          end
+          joined =
+            case {prefix, suffix} do
+              {"", suffix} -> suffix
+              {prefix, ""} -> prefix
+              {prefix, suffix} -> prefix <> "." <> suffix
+            end
 
-        {:ok, joined, rest}
+          {:ok, joined, rest}
 
-      error ->
-        error
+        error ->
+          error
+      end
     end
   end
 
-  defp decode_name_labels(_other, _labels, _message) do
+  defp decode_name_labels(_other, _labels, _message, _visited) do
     {:error, :invalid_name}
   end
 

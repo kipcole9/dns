@@ -148,6 +148,19 @@ defmodule ExDns.API.AuthTest do
       assert not_ok.status == 403
     end
 
+    test "bare `*` scope matches every zone" do
+      record = issue!(:zone_admin, ["*"])
+
+      Enum.each(["mail.internal.example", "anything.public.test", "rooty"], fn zone ->
+        result =
+          request_with(record["secret"])
+          |> Auth.call([])
+          |> Auth.require_scope(zone)
+
+        refute result.halted, "bare `*` should grant scope for #{zone}"
+      end)
+    end
+
     test "wildcard glob matches subdomains" do
       record = issue!(:zone_admin, ["*.internal.example"])
 

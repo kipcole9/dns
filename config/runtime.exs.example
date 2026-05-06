@@ -134,6 +134,45 @@ config :ex_dns,
 config :ex_dns, :plugin_pipeline,
   underlying: ExDns.Resolver.Default
 
+# ----- Abuse mitigation --------------------------------------
+# RRL and DNS Cookies are ON by default. Override here only
+# if you have a deliberate reason (testing, replay rigs).
+
+config :ex_dns, :rrl,
+  enabled: true,
+  responses_per_second: 5,
+  burst: 25,
+  slip: 2,
+  ipv4_prefix: 24,
+  ipv6_prefix: 56
+
+config :ex_dns, :cookies,
+  enabled: true,
+  # `:enforce` rejects spoofed clients with BADCOOKIE. Turn on
+  # once you've confirmed your operator clients send cookies.
+  enforce: false
+
+# Per-source-IP throttle for `/api/v1` authentication failures.
+config :ex_dns, :api_auth_throttle,
+  enabled: true,
+  burst: 10,
+  refill_seconds: 60,
+  cooldown_seconds: 300
+
+# Per-source-IP concurrent connection cap for stream
+# listeners (TCP DNS, DoT, DoH). Stops a single misbehaving
+# client from monopolising the global connection pool.
+config :ex_dns, :per_ip_cap,
+  enabled: true,
+  max_per_ip: 64
+
+# 0x20 case randomisation for outbound recursive queries.
+# Off by default — some legacy authoritative servers
+# normalise case in the question section and would fail
+# the echo check. Turn on if you control / trust the
+# upstream chain.
+config :ex_dns, :recursor_case_randomise, false
+
 # ----- Observability -----------------------------------------
 
 # Prometheus metrics on a dedicated port

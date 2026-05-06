@@ -1,0 +1,103 @@
+###############################################################################
+# ExDns systemd unit
+#
+# Place this file at `/etc/systemd/system/exdns.service` and enable with:
+#
+#     systemctl daemon-reload
+#     systemctl enable --now exdns
+#
+# Companion files:
+#
+#   /etc/exdns/runtime.exs       (operator config — see runtime.exs.example)
+#   /etc/exdns/zones.d/*.zone    (zone files)
+#   /var/lib/exdns/              (StateDirectory: EKV data + tokens + snapshot)
+#
+# Type=notify reads READY/STOPPING/WATCHDOG signals emitted by
+# `ExDns.SystemD`. The watchdog timeout below must be greater than the
+# interval at which the application pings sd_notify (default 30 s).
+###############################################################################
+
+[Unit]
+Description=ExDns authoritative + recursive DNS server
+Documentation=https://github.com/kipcole9/dns
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=exdns
+Group=exdns
+
+# Where the release lives. Adjust to wherever you unpacked
+# `_build/prod/ex_dns-<version>.tar.gz`.
+WorkingDirectory=/opt/exdns
+ExecStart=/opt/exdns/bin/ex_dns start
+ExecStop=/opt/exdns/bin/ex_dns stop
+
+# Per-deployment runtime config. The release reads this if it
+# exists in the standard location below; symlink or copy as needed.
+Environment=RELEASE_NODE=exdns@%H
+Environment=RELEASE_COOKIE_FILE=/var/lib/exdns/.cookie
+Environment=EXDNS_RUNTIME_CONFIG=/etc/exdns/runtime.exs
+
+# State directory (created with mode 0750 owned by User=).
+StateDirectory=exdns
+StateDirectoryMode=0750
+
+# Health probes + sd_notify wiring.
+NotifyAccess=main
+WatchdogSec=60s
+
+# Graceful drain. ExDns.Drain stops accepting new work, waits
+# for in-flight queries to complete, then exits. Give it
+# enough time on a busy box.
+TimeoutStopSec=45s
+KillMode=mixed
+SendSIGKILL=yes
+Restart=on-failure
+RestartSec=5s
+
+# --- Hardening -------------------------------------------------------
+
+# Bind low ports (53, 853 for DoT, 443 for DoH) without running
+# the BEAM as root. The capability is restricted to this unit.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Filesystem isolation.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/opt/exdns /etc/exdns
+ReadWritePaths=/var/lib/exdns
+
+# Process / kernel surface reduction.
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false   # The BEAM JIT needs RWX pages; flip to true on systems where the JIT is disabled
+
+# Network surface — DNS over UDP/TCP/QUIC, plus the API port.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# System-call filter (Linux ≥ 5.0 / systemd ≥ 240).
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# --- Resource limits --------------------------------------------------
+
+# DNS workloads are file-descriptor heavy (one socket per active
+# stream connection + per active zone transfer + per recursor in-flight).
+LimitNOFILE=65535
+
+# Restart policy.
+TasksMax=infinity
+
+[Install]
+WantedBy=multi-user.target

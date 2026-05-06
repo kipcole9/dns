@@ -117,4 +117,42 @@ defmodule ExDns.API.TokenStoreTest do
       assert TokenStore.path() =~ "ex_dns_tokens_"
     end
   end
+
+  describe "secrets at rest" do
+    test "the on-disk file never contains the plaintext secret", %{path: path} do
+      {:ok, %{"secret" => secret}} = TokenStore.issue(%{role: :viewer, scopes: []})
+
+      raw = File.read!(path)
+
+      refute raw =~ secret
+      assert raw =~ "secret_hash"
+      refute raw =~ ~s("secret":)
+    end
+
+    test "accepts legacy plaintext records on read and rewrites them on next mutation", %{
+      path: path
+    } do
+      # Hand-craft an "old store" with a plaintext secret to
+      # simulate an upgrade from a release that wrote them.
+      legacy_secret = "legacy-secret-value-" <> Base.url_encode64(:crypto.strong_rand_bytes(16))
+      legacy = %{
+        "id" => "legacy-id",
+        "secret" => legacy_secret,
+        "role" => "viewer",
+        "scopes" => [],
+        "created_at_unix" => 1_700_000_000,
+        "expires_at_unix" => nil,
+        "label" => nil
+      }
+      File.write!(path, [legacy] |> :json.encode() |> IO.iodata_to_binary())
+
+      assert {:ok, %{"id" => "legacy-id"}} = TokenStore.find_by_secret(legacy_secret)
+
+      # Triggering any mutation rewrites the file in the new
+      # shape; the legacy plaintext is gone.
+      {:ok, _} = TokenStore.issue(%{role: :viewer, scopes: []})
+      raw = File.read!(path)
+      refute raw =~ legacy_secret
+    end
+  end
 end

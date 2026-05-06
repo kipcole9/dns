@@ -1,0 +1,32 @@
+# Build artefacts and caches
+_build
+deps
+.elixir_ls
+.mix
+.git
+.github
+.DS_Store
+
+# Editor + IDE noise
+.vscode
+.idea
+*.swp
+
+# Tests + dev-only assets
+test
+bench
+plans
+guides
+docs
+
+# Local state
+*.log
+*.sqlite
+tmp
+
+# Already-built releases
+*.tar.gz
+
+# Keep things small; the runtime stage doesn't need the lockfile
+# because deps are already vendored into the release.
+node_modules

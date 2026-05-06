@@ -154,8 +154,13 @@ defmodule ExDns.RRL do
     end
   end
 
+  # RRL is on by default — a public-facing authoritative
+  # server with RRL disabled is a reflection-amplification
+  # asset for any bored adversary. Operators who genuinely
+  # want it off (e.g. testing, behaviour-replay rigs) set
+  # `:ex_dns, :rrl, [enabled: false]` explicitly.
   defp enabled? do
-    Application.get_env(:ex_dns, :rrl, []) |> Keyword.get(:enabled, false)
+    Application.get_env(:ex_dns, :rrl, []) |> Keyword.get(:enabled, true)
   end
 
   defp do_check(client_ip, qname, qtype, response_kind) do

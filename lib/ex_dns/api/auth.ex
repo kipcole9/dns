@@ -25,21 +25,39 @@ defmodule ExDns.API.Auth do
 
   import Plug.Conn
 
-  alias ExDns.API.TokenStore
+  alias ExDns.API.{Auth.Throttle, TokenStore}
 
   @doc false
   def init(options), do: options
 
   @doc false
   def call(conn, _options) do
+    case Throttle.check(conn.remote_ip) do
+      {:error, :throttled, retry_after} ->
+        conn
+        |> put_resp_header("retry-after", Integer.to_string(retry_after))
+        |> deny(429, "too many authentication failures")
+
+      :ok ->
+        do_authenticate(conn)
+    end
+  end
+
+  defp do_authenticate(conn) do
     case extract_bearer(conn) do
       {:ok, secret} ->
         case TokenStore.find_by_secret(secret) do
-          {:ok, token} -> assign(conn, :exdns_token, token)
-          :error -> deny(conn, 401, "unauthorized")
+          {:ok, token} ->
+            Throttle.record_success(conn.remote_ip)
+            assign(conn, :exdns_token, token)
+
+          :error ->
+            Throttle.record_failure(conn.remote_ip)
+            deny(conn, 401, "unauthorized")
         end
 
       :error ->
+        Throttle.record_failure(conn.remote_ip)
         deny(conn, 401, "unauthorized")
     end
   end
@@ -129,6 +147,14 @@ defmodule ExDns.API.Auth do
     name |> to_string() |> String.trim_trailing(".") |> String.downcase(:ascii)
   end
 
-  defp matches?(name, "*." <> suffix), do: String.ends_with?(name, "." <> suffix) or name == suffix
+  # `"*"` (bare star) matches every zone — the natural way
+  # for an operator to issue a `zone_admin` token that can
+  # touch any zone without granting `cluster_admin`. Mix
+  # task `exdns.token.issue --scopes "*"` produces this.
+  defp matches?(_name, "*"), do: true
+
+  defp matches?(name, "*." <> suffix),
+    do: String.ends_with?(name, "." <> suffix) or name == suffix
+
   defp matches?(name, glob), do: name == glob
 end

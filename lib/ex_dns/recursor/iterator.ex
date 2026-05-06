@@ -477,19 +477,56 @@ defmodule ExDns.Recursor.Iterator do
     if monotonic_ms() > deadline do
       {:error, :timeout}
     else
-      query = build_query(qname, qtype)
+      sent_qname = ExDns.Recursor.CaseRandomise.apply(qname)
+      query = build_query(sent_qname, qtype)
 
       case Client.query(ip, query, udp_timeout: 1_500, tcp_timeout: 3_000) do
-        {:ok, response} -> {:ok, response}
-        {:error, _} -> try_servers(rest, qname, qtype, deadline)
+        {:ok, response} ->
+          # Off-path attackers can race the legitimate response on
+          # the ephemeral UDP socket. The 16-bit query ID is the
+          # only handshake we have on UDP, so if it doesn't match
+          # the one we just sent, treat the packet as if it never
+          # arrived and try the next server. With 0x20 enabled we
+          # additionally require the response to echo the same
+          # case-randomised qname.
+          if accept_response?(response, query, sent_qname) do
+            {:ok, response}
+          else
+            try_servers(rest, qname, qtype, deadline)
+          end
+
+        {:error, _} ->
+          try_servers(rest, qname, qtype, deadline)
       end
     end
+  end
+
+  defp accept_response?(%Message{} = response, %Message{} = query, sent_qname) do
+    response.header.id == query.header.id and
+      qname_echo_matches?(response, sent_qname)
+  end
+
+  defp qname_echo_matches?(%Message{question: nil}, _sent), do: true
+
+  defp qname_echo_matches?(%Message{question: %Question{host: echoed}}, sent),
+    do: ExDns.Recursor.CaseRandomise.match?(echoed, sent)
+
+  defp qname_echo_matches?(_, _), do: true
+
+  # 16 bits of cryptographically-strong randomness for the query
+  # ID. `:rand.uniform/1` is fast but its state is recoverable from
+  # a small number of observations — a Kaminsky-style off-path
+  # attacker can predict subsequent IDs, so the recursor must use
+  # `:crypto.strong_rand_bytes/1` (CSPRNG) instead.
+  defp random_query_id do
+    <<id::unsigned-integer-size(16)>> = :crypto.strong_rand_bytes(2)
+    id
   end
 
   defp build_query(qname, qtype) do
     %Message{
       header: %Header{
-        id: :rand.uniform(65_535),
+        id: random_query_id(),
         qr: 0,
         oc: 0,
         aa: 0,

@@ -31,6 +31,28 @@ defmodule ExDns.Recursor.CacheTest do
     assert :miss = Cache.lookup("never.heard.of", :a)
   end
 
+  test "the table is capped at `:max_entries` (water-torture defence)" do
+    previous = Application.get_env(:ex_dns, :recursor_cache)
+    Application.put_env(:ex_dns, :recursor_cache, max_entries: 50)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:ex_dns, :recursor_cache)
+        v -> Application.put_env(:ex_dns, :recursor_cache, v)
+      end
+    end)
+
+    Enum.each(1..200, fn i ->
+      record = %A{name: "h#{i}.test", ttl: 3600, class: :in, ipv4: {1, 2, 3, 4}}
+      Cache.put("h#{i}.test", :a, [record], 3600)
+    end)
+
+    # We push 200 entries with a cap of 50 — eviction must
+    # have kicked in. Allow a slack of one eviction batch
+    # (≈ cap * @evict_fraction = 5) on top of the cap.
+    assert :ets.info(:ex_dns_recursor_cache, :size) <= 60
+  end
+
   test "expired entries are dropped on lookup" do
     record = %A{ipv4: {1, 2, 3, 4}}
     Cache.put("short.lived", :a, [record], 60)

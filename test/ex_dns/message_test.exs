@@ -57,5 +57,31 @@ defmodule ExDns.MessageTest do
       <<_::binary-size(12 + byte_size(first_name)), pointer_section::binary>> = message
       assert {:ok, "example.com", <<>>} = Message.decode_name(pointer_section, message)
     end
+
+    test "rejects a self-referential compression pointer" do
+      # Pointer at offset 12 points to offset 12 — classic infinite-loop
+      # payload (RFC 1035 §4.1.4 violation). Decoding must fail without
+      # blowing the stack or pegging the scheduler.
+      header_pad = <<0::96>>
+      pointer = <<0b11::2, 12::14>>
+      message = header_pad <> pointer
+
+      <<_::binary-size(12), pointer_section::binary>> = message
+      task = Task.async(fn -> Message.decode_name(pointer_section, message) end)
+      assert {:error, :invalid_name} = Task.await(task, 200)
+    end
+
+    test "rejects a two-pointer cycle (A -> B -> A)" do
+      # Two pointers that target each other. The first decode follows
+      # the chain into the visited set; the second hop must abort.
+      header_pad = <<0::96>>
+      ptr_a = <<0b11::2, 14::14>>
+      ptr_b = <<0b11::2, 12::14>>
+      message = header_pad <> ptr_a <> ptr_b
+
+      <<_::binary-size(12), pointer_section::binary>> = message
+      task = Task.async(fn -> Message.decode_name(pointer_section, message) end)
+      assert {:error, :invalid_name} = Task.await(task, 200)
+    end
   end
 end

@@ -26,25 +26,44 @@ defmodule ExDns.Zone.File do
   end
 
   def parse(string) when is_binary(string) do
-    with {:ok, tokens, _end_line} <- tokenize(string),
-         {:ok, {directives, records}} <- :zone_parser.parse(tokens) do
-      {:ok, directives, records}
-    else
-      error ->
-        error
-    end
+    safely(fn ->
+      with {:ok, tokens, _end_line} <- tokenize(string),
+           {:ok, {directives, records}} <- :zone_parser.parse(tokens) do
+        {:ok, directives, records}
+      else
+        error -> error
+      end
+    end)
   end
 
   def process(string) when is_binary(string) do
-    with {:ok, tokens, _end_line} <- tokenize(string),
-         {:ok, parsed} <- :zone_parser.parse(tokens),
-         {:ok, zone} <- expand_origin_references(parsed),
-         {:ok, zone} <- expand_name_and_ttl_references(zone),
-         {:ok, zone} <- build_records(zone) do
-      zone
-    else
-      {:error, _errors} = error ->
-        error
+    safely(fn ->
+      with {:ok, tokens, _end_line} <- tokenize(string),
+           {:ok, parsed} <- :zone_parser.parse(tokens),
+           {:ok, zone} <- expand_origin_references(parsed),
+           {:ok, zone} <- expand_name_and_ttl_references(zone),
+           {:ok, zone} <- build_records(zone) do
+        zone
+      else
+        {:error, _errors} = error -> error
+      end
+    end)
+  end
+
+  # The lexer/parser/expansion stages can raise (invalid
+  # UTF-8 from `String.split/2`, MatchError on unexpected
+  # AST shapes, etc). Operators feed this both trusted
+  # zone files and over-the-wire AXFR streams; a raise here
+  # would crash the worker. Convert every raise/throw/exit
+  # into `{:error, {kind, reason}}` so callers see a value
+  # and the BEAM stays up.
+  defp safely(fun) do
+    try do
+      fun.()
+    rescue
+      e -> {:error, {:exception, e}}
+    catch
+      kind, reason -> {:error, {kind, reason}}
     end
   end
 

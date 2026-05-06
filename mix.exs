@@ -15,9 +15,69 @@ defmodule ExDns.Mixfile do
       deps: deps(),
       elixirc_paths: elixirc_paths(Mix.env()),
       source_url: @source_url,
+      description: description(),
+      package: package(),
       docs: docs(),
+      releases: releases(),
       dialyzer: [
         plt_add_apps: [:mix, :ex_unit]
+      ]
+    ]
+  end
+
+  defp description do
+    "Elixir-native DNS server. Authoritative + recursive in one binary, " <>
+      "with DNSSEC, dynamic UPDATE, AXFR/IXFR/NOTIFY, DoT/DoH, an HTTP " <>
+      "operator API, a CIDR-routed plugin framework, and EKV-backed " <>
+      "cluster replication."
+  end
+
+  defp package do
+    [
+      maintainers: ["Kip Cole"],
+      licenses: ["Apache-2.0"],
+      links: %{
+        "GitHub" => @source_url,
+        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md",
+        "Guides" => "#{@source_url}/tree/main/guides"
+      },
+      files: [
+        "lib",
+        "src",
+        "priv/openapi",
+        "config/config.exs",
+        "config/prod.exs",
+        "config/runtime.exs.example",
+        "contrib/systemd",
+        "guides",
+        "mix.exs",
+        "README.md",
+        "CHANGELOG.md",
+        "LICENSE"
+      ]
+    ]
+  end
+
+  # `mix release` builds a self-contained tarball under
+  # `_build/<env>/rel/ex_dns/`. Operators run it via
+  # `bin/ex_dns start` (foreground) or `bin/ex_dns daemon`
+  # (background); the included Erlang VM means the host
+  # doesn't need Elixir / Erlang installed.
+  defp releases do
+    [
+      ex_dns: [
+        include_executables_for: [:unix],
+        applications: [
+          runtime_tools: :permanent,
+          ex_dns: :permanent
+        ],
+        steps: [:assemble, :tar],
+        # `cookie` is regenerated each build by default —
+        # fine for single-node, but multi-node clusters need
+        # the same cookie on every host. Operators set this
+        # via `RELEASE_COOKIE` at runtime; the file-based
+        # default is overridden when the env var is set.
+        cookie: "ex_dns"
       ]
     ]
   end
