@@ -71,7 +71,7 @@ defmodule ExDns.Mixfile do
           runtime_tools: :permanent,
           ex_dns: :permanent
         ],
-        steps: [:assemble, :tar],
+        steps: [:assemble, &copy_install_assets/1, :tar],
         # `cookie` is regenerated each build by default —
         # fine for single-node, but multi-node clusters need
         # the same cookie on every host. Operators set this
@@ -80,6 +80,25 @@ defmodule ExDns.Mixfile do
         cookie: "ex_dns"
       ]
     ]
+  end
+
+  # Copy the systemd unit + minimal runtime.exs into the release
+  # tree so `contrib/install/install.sh` can find them after
+  # untarring. Without this step those files only live in the
+  # source tree, not in the published tarball.
+  defp copy_install_assets(release) do
+    File.mkdir_p!(Path.join(release.path, "contrib/systemd"))
+    File.cp!(
+      "contrib/systemd/exdns.service",
+      Path.join(release.path, "contrib/systemd/exdns.service")
+    )
+
+    File.cp!(
+      "config/runtime.exs.minimal",
+      Path.join(release.path, "releases/#{release.version}/runtime.exs")
+    )
+
+    release
   end
 
   def application do

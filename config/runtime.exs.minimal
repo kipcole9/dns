@@ -1,0 +1,106 @@
+###############################################################################
+# Minimal opinionated `runtime.exs` shipped by the installer
+# (contrib/install/install.sh). Drop-in replacement for the
+# comprehensive `runtime.exs.example`; trades configurability
+# for "just works on a fresh box".
+#
+# Operator who outgrows this: copy `runtime.exs.example` over
+# the top and edit. The release picks up the new file on
+# next restart.
+###############################################################################
+
+import Config
+
+# ----- Where things live -----------------------------------
+# Single state directory. Hosts EKV, snapshot, tokens, every
+# bit of runtime mutable state.
+state_dir = System.get_env("EXDNS_STATE_DIR", "/var/lib/exdns")
+zones_dir = System.get_env("EXDNS_ZONES_DIR", "/etc/exdns/zones.d")
+
+# ----- Network identity ------------------------------------
+# Auto-detected at install time and baked into env by the
+# installer; operators on weird networks override.
+config :ex_dns,
+  listener_port: System.get_env("EXDNS_PORT", "53") |> String.to_integer(),
+  zones: [Path.join(zones_dir, "*.zone")]
+
+config :ex_dns, :nsid,
+  enabled: true,
+  identifier: System.get_env("EXDNS_NSID", "exdns")
+
+# ----- Storage substrate -----------------------------------
+# Single-node EKV by default. Multi-node is a follow-on
+# step the operator opts into via the comprehensive config.
+config :ex_dns, :ekv,
+  enabled: true,
+  data_dir: Path.join(state_dir, "ekv"),
+  cluster_size: 1,
+  mode: :member
+
+# ----- Survive restart -------------------------------------
+config :ex_dns, :zone_snapshot,
+  enabled: true,
+  path: Path.join(state_dir, "snapshot.bin")
+
+# ----- Admin API + first-run bootstrap ---------------------
+# API on loopback only. The installer-issued single-use
+# bootstrap code lives at `<state_dir>/bootstrap.code`; the
+# UI's setup wizard reads it once and the file is then
+# deleted.
+config :ex_dns, :api,
+  enabled: true,
+  port: 9571,
+  bind: {127, 0, 0, 1},
+  token_path: Path.join(state_dir, "tokens.json")
+
+config :ex_dns, :bootstrap,
+  enabled: true,
+  code_path: Path.join(state_dir, "bootstrap.code")
+
+# ----- Health probe ----------------------------------------
+config :ex_dns, :health,
+  enabled: true,
+  port: System.get_env("EXDNS_HEALTH_PORT", "9572") |> String.to_integer()
+
+# ----- Prometheus metrics (private) ------------------------
+config :ex_dns, :metrics,
+  enabled: true,
+  port: System.get_env("EXDNS_METRICS_PORT", "9573") |> String.to_integer()
+
+# ----- Abuse mitigation (Tier 1 + Tier 2 defaults) ---------
+# Every safety net we shipped is on by default. Operators
+# wanting to test against e.g. dnsperf at high QPS turn off
+# RRL temporarily in the comprehensive config.
+config :ex_dns, :rrl,
+  enabled: true,
+  responses_per_second: 5,
+  burst: 25,
+  slip: 2
+
+config :ex_dns, :cookies,
+  enabled: true,
+  enforce: false
+
+config :ex_dns, :api_auth_throttle,
+  enabled: true,
+  burst: 10,
+  refill_seconds: 60,
+  cooldown_seconds: 300
+
+config :ex_dns, :per_ip_cap,
+  enabled: true,
+  max_per_ip: 64
+
+config :ex_dns, :recursor_cache,
+  max_entries: 100_000
+
+# ----- Resolver mode ---------------------------------------
+# Default: authoritative-only (`recursion: false`). The
+# setup wizard flips this to `true` if the operator picks
+# the "resolve DNS for my LAN" or "block ads" preset.
+config :ex_dns, recursion: false
+
+# ----- DNSSEC (validator-side defaults) --------------------
+# Signing keys are operator-driven via the UI / CLI when
+# they want it. Validation is RFC 8624 strict-by-default.
+config :ex_dns, :dnssec_algorithm_policy, strict: false
