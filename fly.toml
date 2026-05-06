@@ -1,0 +1,105 @@
+###############################################################################
+# fly.toml — ExDns single-node test deployment.
+#
+# Domain: elixir-dns-test.com
+# Region: lhr (London) — change `primary_region` if you sit elsewhere; pick
+#         a region in `fly platform regions` that's close to where the
+#         external validation suite will probe from.
+#
+# Companion files:
+#   contrib/fly/runtime.exs                  — runtime config (baked in)
+#   contrib/fly/zones.d/*.zone               — initial zones (baked in)
+#   plans/fly_io_initial_deploy.md           — the recipe behind this file
+#   guides/04-delegating-your-domain.md      — Cloudflare delegation walkthrough
+###############################################################################
+
+app = "exdns-test"
+primary_region = "lhr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# ----- Build args ----------------------------------------------------------
+# These get substituted into the zone file during the image build (see the
+# Dockerfile `sed` step). Override at deploy time with:
+#
+#   fly deploy --build-arg FLY_PUBLIC_V4=$(fly ips list | awk '/v4/ {print $2}') \
+#              --build-arg FLY_PUBLIC_V6=$(fly ips list | awk '/v6/ {print $2}')
+#
+# A helper script in contrib/fly/README.md wraps this.
+
+[build.args]
+  FLY_PUBLIC_V4 = "0.0.0.0"
+  FLY_PUBLIC_V6 = "::"
+
+# ----- Compile-time env ----------------------------------------------------
+# Per-deployment values sourced from Fly secrets at boot — DO NOT put
+# secrets here. PHX_HOST and EXDNS_RUNTIME_CONFIG are deploy-time
+# constants and live here.
+
+[env]
+  PHX_HOST = "ns1.elixir-dns-test.com"
+  EXDNS_RUNTIME_CONFIG = "/opt/exdns/etc/runtime.exs"
+
+# ----- Persistent volume ---------------------------------------------------
+# Holds /var/lib/exdns/{ekv,snapshot.bin,tokens.json}.
+
+[[mounts]]
+  source = "exdns_state"
+  destination = "/var/lib/exdns"
+
+# ----- DNS over UDP --------------------------------------------------------
+# Requires a dedicated v4. Allocate before first deploy:
+#   fly ips allocate-v4 --app exdns-test
+#   fly ips allocate-v6 --app exdns-test
+
+[[services]]
+  protocol = "udp"
+  internal_port = 53
+
+  [[services.ports]]
+    port = 53
+
+# ----- DNS over TCP --------------------------------------------------------
+# For >512-byte responses, EDNS-truncated retries, AXFR/IXFR.
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 53
+
+  [[services.ports]]
+    port = 53
+
+  # Aggressive limits — slow-loris defence at the platform layer
+  # complementing the per-IP cap from T2.3 inside ExDns.
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 1024
+    soft_limit = 800
+
+  # Fly's TCP health check probes the dedicated /readyz port.
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "10s"
+    port = 9572
+
+# ----- Machine sizing ------------------------------------------------------
+# 512 MB is comfortable for a single zone + EKV + the recursor cap.
+# Bump to 1024 when DoT/DoH (and TLS handshake state) come online.
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+# ----- Always-on -----------------------------------------------------------
+# DNS is the wrong workload for cold-start machines. Pin one always-on.
+[[restart]]
+  policy = "always"
+
+# Don't auto-stop. The `auto_stop_machines` knob, while cheaper for
+# bursty workloads, would mean the first query after idle pays a multi-
+# second cold-start penalty — unacceptable for a nameserver.
+[deploy]
+  strategy = "rolling"
+  wait_timeout = "5m"

@@ -541,3 +541,161 @@ ops log. Sample:
 ```
 
 If any row fails, hold further changes until it's resolved.
+
+## §8 — Ongoing operations on Fly
+
+### Day-to-day
+
+| Task | Command |
+|---|---|
+| Tail logs | `fly logs --app exdns-test` |
+| Open a shell on the machine | `fly ssh console --app exdns-test` |
+| Run admin CLI | `fly ssh console --app exdns-test -C "/opt/exdns/bin/exdnsctl status"` |
+| Issue an API token | `fly ssh console -C "/opt/exdns/bin/exdnsctl token issue --role zone_admin --scopes '*'"` |
+| Watch metrics | `fly ssh console -C "curl -sS http://127.0.0.1:9573/metrics"` |
+| Force a zone reload from disk | `fly ssh console -C "/opt/exdns/bin/exdnsctl zone reload <apex>"` |
+| Scale resources | `fly scale memory 1024 --app exdns-test` |
+| Restart the machine (drains gracefully) | `fly machine restart --app exdns-test` |
+
+### Backups
+
+The volume holds the entire authoritative state. Fly
+volumes already snapshot daily; the [backup-and-restore
+runbook](../guides/runbooks/backup-and-restore.md) augments
+this with operator-controlled exports:
+
+```bash
+# Pull a tarball of /var/lib/exdns to your laptop.
+fly ssh console --app exdns-test -C \
+  'tar --use-compress-program=zstd -cf - -C /var/lib/exdns .' \
+  > "exdns-backup-$(date -u +%Y-%m-%dT%H-%M-%SZ).tar.zst"
+```
+
+Schedule weekly until the deployment matures, then daily.
+
+### Cost estimate
+
+| Line item | Approx monthly |
+|---|---|
+| `shared-cpu-1x` machine (always-on) | $1.94 |
+| 512 MB RAM | included |
+| 3 GB volume | $0.45 |
+| Dedicated IPv4 | $2.00 |
+| IPv6 | $0.00 |
+| Outbound bandwidth (low traffic) | < $1 |
+| **Total** | **≈ $5–7 / month** |
+
+Numbers from Fly's pricing page at time of writing —
+**verify before you provision**; pricing changes. If the
+machine moves to `auto_stop = true` the line drops to
+~$3 / month, but DNS is the wrong workload for cold-start
+machines (the first query after stop pays the boot
+penalty + DNSSEC validation cache miss).
+
+### Monitoring
+
+The Prometheus metrics endpoint at `:9573/metrics` is
+private to the machine. Two integration paths:
+
+1. **Fly's Grafana** (free tier) — point a Prometheus
+   scrape at the machine's internal address. Setup at
+   [fly.io/docs/metrics-and-logs/metrics/](https://fly.io/docs/metrics-and-logs/metrics/).
+2. **External Prometheus** (your existing observability
+   stack) — open `:9573` on the machine to a private
+   network only, scrape from there.
+
+Pick (1) for the test iteration; switch to (2) if/when
+this graduates to a serious deployment.
+
+## §9 — Graduation path
+
+Once the single-NS test domain has been answering cleanly
+for two weeks with no incidents, here's the deliberate
+sequence to take it the rest of the way to production.
+**Do one step at a time; verify with the validation plan
+between each.**
+
+### Step 1 — Add a second nameserver
+
+Standard practice (and most registrars require it). Two
+realistic options:
+
+* **Second Fly app in a different region** —
+  `exdns-test-iad` mirroring `exdns-test-lhr`, fed via
+  primary→secondary AXFR + NOTIFY (see
+  [guide 08](../guides/08-secondary-zones-axfr-ixfr-notify.md)).
+  Cost: another ~$5 / month.
+
+* **Promote to a 3-node EKV cluster** in Fly — three apps
+  with shared cluster identity, EKV peer port open between
+  them only. Operationally heavier but is the path to
+  multi-region active-active.
+
+For a test domain, option 1 is enough. Move to option 2
+only when graduating to a real workload.
+
+### Step 2 — Sign with DNSSEC
+
+Walk through [guide 07](../guides/07-dnssec-signing-and-rollover.md):
+generate KSK + ZSK, register the DS at Cloudflare. T1.1
+ensures we won't ship expired signatures; the
+signing-lag telemetry from T2.5 should be wired into the
+Grafana dashboard as a precondition.
+
+### Step 3 — Add DoT (port 853)
+
+* Allocate a TLS cert via Let's Encrypt + DNS-01 (since
+  we're now authoritative for the zone, this is easy).
+  See [tls-certificate-renewal.md](../guides/runbooks/tls-certificate-renewal.md)
+  for the post-hook script.
+* Add a `[[services]]` block in `fly.toml` for port 853.
+* Re-run validation stage 2 (CryptCheck) until green.
+
+### Step 4 — Add DoH (port 443)
+
+Same recipe as DoT. Conflict to watch: if you also serve
+HTTP on the Fly app for any reason, port 443 is taken.
+
+### Step 5 — Adversarial review
+
+At this point the surface is meaningful enough to warrant
+external eyes. Trigger validation stage 7. For a test
+deployment the bug-bounty path is overkill; a paid
+security engineer for a quarter is the right shape.
+
+### Step 6 — Production cut-over
+
+If the test domain has been clean for 60 days, repeat the
+whole plan with a real domain and follow the production
+half of [guide 04](../guides/04-delegating-your-domain.md).
+
+The path is intentionally slow. DNS errors are loud,
+recovery from a botched cut-over takes hours of cache
+TTL, and "undo" doesn't exist below the parent zone.
+Earn each step.
+
+## Order of operations summary
+
+```
+0.  Prerequisites met
+1.  fly apps create + volume create                (§1)
+2.  fly ips allocate-v4 + v6                       (§2)
+3.  Set fly secrets (RELEASE_COOKIE, NSID, NS)     (§3)
+4.  Write contrib/fly/runtime.exs + zones.d/*.zone (§3, §4)
+5.  Write fly.toml                                 (§4)
+6.  Update Dockerfile to copy runtime.exs + zones  (§4)
+7.  Cloudflare: register glue (NOT change NS yet)  (§5a)
+8.  fly deploy                                     (§6)
+9.  Smoke test from outside the Fly network        (§6)
+10. Cloudflare: change NS to ns1.<your-domain>     (§5c)
+11. Wait for parent-TTL propagation (~1h)          (§7)
+12. Run validation stages 1, 4, 5, 6               (§7)
+13. Capture results in ops log                     (§7)
+14. Soak for two weeks                             (§9)
+15. Begin graduation steps 1–6                     (§9)
+```
+
+If anything in 1–13 trips, stop, fix, restart from the
+last green step. If anything in 14 surfaces, file an
+issue and decide before continuing 15.
+

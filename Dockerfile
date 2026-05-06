@@ -73,6 +73,28 @@ WORKDIR /opt/exdns
 
 COPY --from=builder --chown=root:root /build/_build/prod/rel/ex_dns ./
 
+# ----- Fly.io extras -------------------------------------------------------
+# Bake the Fly-specific runtime config + zone files into the image so the
+# release boots cleanly without operator-supplied volume contents on first
+# launch. Operators can still drop a custom /etc/exdns/runtime.exs onto
+# the volume to override.
+
+COPY contrib/fly/runtime.exs /opt/exdns/etc/runtime.exs
+COPY contrib/fly/zones.d /etc/exdns/zones.d
+
+# The zone file ships with literal `__FLY_PUBLIC_V4__` / `__FLY_PUBLIC_V6__`
+# placeholders so the IP isn't committed to git. Substitute the real
+# addresses in at build time using values passed via `--build-arg`.
+ARG FLY_PUBLIC_V4="0.0.0.0"
+ARG FLY_PUBLIC_V6="::"
+
+RUN sed -i \
+        -e "s/__FLY_PUBLIC_V4__/${FLY_PUBLIC_V4}/g" \
+        -e "s/__FLY_PUBLIC_V6__/${FLY_PUBLIC_V6}/g" \
+        /etc/exdns/zones.d/*.zone \
+ && chown -R root:exdns /etc/exdns/zones.d \
+ && chmod -R u=rwX,g=rX,o= /etc/exdns/zones.d
+
 # Bind low ports (53, 853, 443) without root.
 RUN setcap 'cap_net_bind_service=+ep' /opt/exdns/erts-*/bin/beam.smp || true
 
@@ -84,7 +106,10 @@ VOLUME ["/etc/exdns", "/var/lib/exdns"]
 # DNS (UDP+TCP), DoT, DoH, admin API, health, metrics.
 EXPOSE 53/udp 53/tcp 853/tcp 443/tcp 9571/tcp 9572/tcp 9573/tcp
 
-ENV EXDNS_RUNTIME_CONFIG=/etc/exdns/runtime.exs
+# Point at the Fly-baked runtime config. Operators on other platforms
+# (systemd, k8s, plain Docker) override this to /etc/exdns/runtime.exs
+# and bind-mount their own.
+ENV EXDNS_RUNTIME_CONFIG=/opt/exdns/etc/runtime.exs
 
 # Health check — tied to the readiness probe ExDns exports.
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \

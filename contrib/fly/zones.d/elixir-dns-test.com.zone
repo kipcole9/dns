@@ -1,0 +1,14 @@
+$TTL 3600
+$ORIGIN elixir-dns-test.com.
+@   IN SOA ns1.elixir-dns-test.com. hostmaster.elixir-dns-test.com. ( 2026050601 7200 3600 1209600 3600 )
+    IN NS  ns1.elixir-dns-test.com.
+ns1 IN A    __FLY_PUBLIC_V4__
+ns1 IN AAAA __FLY_PUBLIC_V6__
+@   IN A    __FLY_PUBLIC_V4__
+@   IN AAAA __FLY_PUBLIC_V6__
+www IN A    __FLY_PUBLIC_V4__
+www IN AAAA __FLY_PUBLIC_V6__
+api IN A    __FLY_PUBLIC_V4__
+docs IN A   __FLY_PUBLIC_V4__
+status IN A __FLY_PUBLIC_V4__
+*.test IN A __FLY_PUBLIC_V4__
