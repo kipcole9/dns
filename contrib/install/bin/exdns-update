@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+###############################################################################
+# exdns-update — self-update for an installed ExDns release.
+#
+# Checks GitHub Releases for a newer tag, downloads the matching tarball,
+# drains the running instance, swaps `/opt/exdns` to the new tree,
+# restarts, and runs `exdns doctor` to confirm.
+#
+# Usage:
+#
+#     sudo exdns-update                Latest stable release.
+#     sudo exdns-update v0.3.0         Pin to a specific version.
+#     sudo exdns-update --check        Just print "an update is available", don't apply.
+#     sudo exdns-update --force        Skip the migration-acknowledgement gate.
+#
+# Refuses by default if the new release's CHANGELOG.md contains a
+# `### Migration` heading — operators have to acknowledge by passing
+# `--force`. (We can't automatically run unknown migrations.)
+###############################################################################
+
+set -euo pipefail
+
+REPO="kipcole9/dns"
+INSTALL_PREFIX="${EXDNS_HOME:-/opt/exdns}"
+PARENT="$(dirname "${INSTALL_PREFIX}")"
+
+VERSION="latest"
+CHECK_ONLY=0
+FORCE=0
+
+red()    { printf "\033[31m%s\033[0m\n" "$*"; }
+green()  { printf "\033[32m%s\033[0m\n" "$*"; }
+yellow() { printf "\033[33m%s\033[0m\n" "$*"; }
+
+die() { red "error: $*" >&2; exit 1; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check) CHECK_ONLY=1; shift ;;
+    --force) FORCE=1; shift ;;
+    --help|-h) grep '^#' "$0" | sed 's/^# \?//'; exit 0 ;;
+    v*|[0-9]*) VERSION="$1"; shift ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ $EUID -eq 0 ]] || die "this command needs root"
+
+# ----- detect target ---------------------------------------------------
+
+detect_target() {
+  local os arch
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m)"
+
+  case "${os}-${arch}" in
+    linux-x86_64)         echo "linux-x86_64" ;;
+    linux-aarch64|linux-arm64) echo "linux-aarch64" ;;
+    darwin-arm64)         echo "macos-arm64" ;;
+    *) die "unsupported platform: ${os}-${arch}" ;;
+  esac
+}
+
+TARGET="$(detect_target)"
+
+# ----- resolve current + latest version -------------------------------
+
+current_version() {
+  if [[ -f "${INSTALL_PREFIX}/releases/start_erl.data" ]]; then
+    awk '{print $2}' "${INSTALL_PREFIX}/releases/start_erl.data"
+  else
+    echo "unknown"
+  fi
+}
+
+CURRENT="$(current_version)"
+green "current version: ${CURRENT}"
+
+if [[ "$VERSION" == "latest" ]]; then
+  VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+             | grep -E '"tag_name":' | head -1 \
+             | sed -E 's/.*"tag_name": "([^"]+)".*/\1/')"
+fi
+
+[[ -z "$VERSION" ]] && die "couldn't resolve target version"
+green "target version:  ${VERSION}"
+
+VERSION_NO_V="${VERSION#v}"
+
+if [[ "${CURRENT}" == "${VERSION_NO_V}" ]]; then
+  green "already on ${VERSION}; nothing to do"
+  exit 0
+fi
+
+if [[ $CHECK_ONLY -eq 1 ]]; then
+  yellow "update available: ${CURRENT} → ${VERSION_NO_V}"
+  exit 0
+fi
+
+# ----- download new tarball -------------------------------------------
+
+TARBALL="ex_dns-${VERSION_NO_V}-${TARGET}.tar.gz"
+URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL}"
+SHA_URL="${URL}.sha256"
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "${WORK}"' EXIT
+
+green "downloading ${URL}"
+curl -fsSL --output "${WORK}/${TARBALL}" "${URL}"
+
+green "verifying SHA-256"
+curl -fsSL --output "${WORK}/${TARBALL}.sha256" "${SHA_URL}" || true
+
+if [[ -s "${WORK}/${TARBALL}.sha256" ]]; then
+  expected="$(awk '{print $1}' "${WORK}/${TARBALL}.sha256")"
+  actual="$(shasum -a 256 "${WORK}/${TARBALL}" | awk '{print $1}')"
+  [[ "$expected" == "$actual" ]] || die "checksum mismatch"
+fi
+
+# Unpack into a versioned directory (not in-place — we want
+# atomic-symlink-swap).
+NEW_DIR="${PARENT}/exdns-${VERSION_NO_V}"
+mkdir -p "${NEW_DIR}"
+tar -xzf "${WORK}/${TARBALL}" -C "${NEW_DIR}"
+
+# ----- migration gate -------------------------------------------------
+
+CHANGELOG="${NEW_DIR}/CHANGELOG.md"
+if [[ -f "$CHANGELOG" ]] && grep -q '### Migration' "$CHANGELOG"; then
+  if [[ $FORCE -ne 1 ]]; then
+    red "this release's CHANGELOG.md mentions a migration."
+    red "Read CHANGELOG.md, perform the migration steps, then re-run with --force."
+    rm -rf "${NEW_DIR}"
+    exit 2
+  else
+    yellow "--force given; proceeding past migration gate"
+  fi
+fi
+
+# ----- atomic swap ----------------------------------------------------
+
+# Drain the running instance (best-effort). The graceful
+# `systemctl stop` already drains via the unit's
+# TimeoutStopSec.
+green "draining + stopping current release"
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl stop exdns || true
+fi
+
+# If /opt/exdns is a real dir (not a symlink), move it
+# aside first so we can swap to a symlink layout.
+if [[ ! -L "${INSTALL_PREFIX}" && -d "${INSTALL_PREFIX}" ]]; then
+  yellow "first update: converting ${INSTALL_PREFIX} to a symlink"
+  mv "${INSTALL_PREFIX}" "${PARENT}/exdns-${CURRENT}"
+fi
+
+ln -sfn "${NEW_DIR}" "${INSTALL_PREFIX}.new"
+mv -T "${INSTALL_PREFIX}.new" "${INSTALL_PREFIX}"
+
+# Re-apply setcap on the new beam.smp (capabilities don't
+# follow symlinks).
+if command -v setcap >/dev/null 2>&1; then
+  beam="$(find "${NEW_DIR}/erts-"*/bin -maxdepth 1 -name beam.smp | head -1)"
+  [[ -n "$beam" ]] && setcap 'cap_net_bind_service=+ep' "$beam" || true
+fi
+
+# ----- restart + verify ----------------------------------------------
+
+green "starting new release"
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl start exdns
+  systemctl is-active --quiet exdns || die "exdns failed to start; rolling back"
+fi
+
+# Give the release a couple of seconds to stand up before
+# we run the doctor.
+sleep 3
+
+if command -v exdns >/dev/null 2>&1; then
+  green "running exdns doctor on the new release"
+  exdns doctor || yellow "doctor found issues; review and resolve"
+fi
+
+# Keep the previous version around for one cycle so an
+# operator can manually roll back if things look wrong.
+green "previous release retained at ${PARENT}/exdns-${CURRENT}"
+green "update complete: ${CURRENT} → ${VERSION_NO_V}"

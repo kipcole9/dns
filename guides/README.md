@@ -2,6 +2,15 @@
 
 Operator-facing guides for installing, deploying, and running ExDns. Read in order if you're new; jump in by topic if you already know what you need.
 
+## I want to…
+
+Three persona-shaped landing pages that walk you to the
+right combination of guides for what you're trying to do:
+
+* [**Block ads on my LAN**](i-want/block-ads.md) — pi-hole-shaped path. 5 minutes to working ad-blocker.
+* [**Host my own domain**](i-want/host-a-domain.md) — small-business / hobbyist. End-to-end including DNSSEC + delegation.
+* [**Replace BIND**](i-want/run-bind-replacement.md) — experienced operator. Config-as-code, every observability surface wired, AXFR interop.
+
 ## Getting started
 
 * [**01 — Installation, configuration & basic operations**](01-installation-and-basic-operations.md)

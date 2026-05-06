@@ -218,6 +218,19 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl enable --now exdns || yellow "couldn't start exdns; check 'journalctl -u exdns'"
 fi
 
+# ----- exdns CLI on $PATH --------------------------------------------
+# Symlink the operator CLI shell wrapper onto /usr/local/bin so operators
+# can type `exdns status` after install. Wrapper talks to the running
+# release via `bin/ex_dns rpc`.
+
+for tool in exdns exdns-update; do
+  src="${INSTALL_PREFIX}/contrib/install/bin/${tool}"
+  if [[ -f "${src}" ]]; then
+    install -m 0755 "${src}" "/usr/local/bin/${tool}"
+    green "installed ${tool} → /usr/local/bin/${tool}"
+  fi
+done
+
 # ----- finish --------------------------------------------------------
 
 bold ""

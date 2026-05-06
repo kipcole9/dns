@@ -1,0 +1,174 @@
+{
+  "$schema": "https://grafana.com/schema/dashboard.json",
+  "title": "ExDns",
+  "uid": "exdns-default",
+  "tags": ["exdns", "dns"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(ex_dns_queries_total, instance)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "QPS (last 5 min)",
+      "id": 1,
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(rate(ex_dns_queries_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "QPS"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "qps" } }
+    },
+    {
+      "type": "stat",
+      "title": "Cache hit %",
+      "id": 2,
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "100 * sum(rate(ex_dns_recursor_cache_lookups_total{result=\"hit\",instance=~\"$instance\"}[5m])) / clamp_min(sum(rate(ex_dns_recursor_cache_lookups_total{instance=~\"$instance\"}[5m])), 1)",
+          "legendFormat": "hit %"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100 } }
+    },
+    {
+      "type": "stat",
+      "title": "RRL drops (last 5 min)",
+      "id": 3,
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(increase(ex_dns_rrl_drops_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "drops"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "EKV quorum",
+      "id": 4,
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "min(ex_dns_ekv_quorum{instance=~\"$instance\"})",
+          "legendFormat": "quorum"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "red" },
+              { "value": 1, "color": "green" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Queries by rcode (rate / 1m)",
+      "id": 5,
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (rcode) (rate(ex_dns_queries_total{instance=~\"$instance\"}[1m]))",
+          "legendFormat": "{{rcode}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Query latency p95 / p99 (µs)",
+      "id": 6,
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(ex_dns_query_duration_us_bucket{instance=~\"$instance\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(ex_dns_query_duration_us_bucket{instance=~\"$instance\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "µs" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "DNSSEC validation outcomes",
+      "id": 7,
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(ex_dns_dnssec_validate_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Worst signing lag (s)",
+      "id": 8,
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 12, "y": 12, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "max(ex_dns_dnssec_signing_lag_seconds{instance=~\"$instance\"})",
+          "legendFormat": "max lag"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 3600, "color": "yellow" },
+              { "value": 7200, "color": "red" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Loaded zones",
+      "id": 9,
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 18, "y": 12, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "count(ex_dns_zone_records{instance=~\"$instance\"})",
+          "legendFormat": "zones"
+        }
+      ]
+    }
+  ]
+}

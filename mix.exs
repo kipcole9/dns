@@ -98,6 +98,15 @@ defmodule ExDns.Mixfile do
       Path.join(release.path, "releases/#{release.version}/runtime.exs")
     )
 
+    File.mkdir_p!(Path.join(release.path, "contrib/install/bin"))
+
+    for tool <- ["exdns", "exdns-update"] do
+      src = Path.join("contrib/install/bin", tool)
+      dest = Path.join([release.path, "contrib/install/bin", tool])
+      File.cp!(src, dest)
+      File.chmod!(dest, 0o755)
+    end
+
     release
   end
 

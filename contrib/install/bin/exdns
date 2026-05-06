@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+###############################################################################
+# exdns — operator CLI for an installed ExDns release.
+#
+# Talks to the running release via `bin/ex_dns rpc`, so this script needs
+# nothing on the operator's box except the release tarball at
+# `/opt/exdns` (or wherever EXDNS_HOME points). No Mix, no Elixir, no source
+# tree required.
+#
+# Installed by `contrib/install/install.sh` at `/usr/local/bin/exdns` as a
+# symlink. Usage:
+#
+#     exdns status
+#     exdns zone list
+#     exdns token issue --role zone_admin --scopes "*"
+#     exdns pause 5m
+#     exdns unpause
+#     exdns help
+#
+# Each subcommand is dispatched to `ExDns.CLI.dispatch/1` inside the running
+# release; the function returns `{:ok, iodata}` or `{:error, iodata}` and
+# this wrapper sets the exit code accordingly.
+###############################################################################
+
+set -euo pipefail
+
+EXDNS_HOME="${EXDNS_HOME:-/opt/exdns}"
+RELEASE_BIN="${EXDNS_HOME}/bin/ex_dns"
+
+if [[ ! -x "${RELEASE_BIN}" ]]; then
+  echo "exdns: ${RELEASE_BIN} not found — is ExDns installed?" >&2
+  exit 1
+fi
+
+# `exdns update [...]` delegates to the standalone updater
+# script. Operators set EXDNS_UPDATE_BIN to override during
+# testing.
+if [[ "${1:-}" == "update" ]]; then
+  shift
+  UPDATER="${EXDNS_UPDATE_BIN:-${EXDNS_HOME}/contrib/install/bin/exdns-update}"
+  if [[ ! -x "${UPDATER}" ]]; then
+    echo "exdns: updater not found at ${UPDATER}" >&2
+    exit 1
+  fi
+  exec "${UPDATER}" "$@"
+fi
+
+# Pass argv as an Erlang list to ExDns.CLI.dispatch/1. We
+# build the list as a quoted Elixir term: ["status"], etc.
+build_argv_list() {
+  local out=""
+  for arg in "$@"; do
+    # Escape backslashes and double quotes.
+    local escaped="${arg//\\/\\\\}"
+    escaped="${escaped//\"/\\\"}"
+    if [[ -z "$out" ]]; then
+      out="\"${escaped}\""
+    else
+      out="${out}, \"${escaped}\""
+    fi
+  done
+  echo "[${out}]"
+}
+
+ARGV_LIST="$(build_argv_list "$@")"
+
+# Invoke into the running node via `rpc`. The remote
+# evaluator returns whatever the function returned; we
+# inspect for the {:ok, _} / {:error, _} shape.
+RESULT="$("${RELEASE_BIN}" rpc "
+  case ExDns.CLI.dispatch(${ARGV_LIST}) do
+    {:ok, out} -> IO.write(out); :ok
+    {:error, out} -> IO.write(:stderr, out); :error
+  end
+" 2>&1)"
+
+# `rpc` exits 0 even on remote errors; we look at the
+# return atom to choose our own exit code.
+case "${RESULT}" in
+  *":error"*) exit 1 ;;
+  *) exit 0 ;;
+esac
