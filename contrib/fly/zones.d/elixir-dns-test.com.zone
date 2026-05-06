@@ -1,14 +1,70 @@
+; ============================================================================
+; elixir-dns-test.com — initial zone file for the Fly.io test deployment.
+;
+; The literal __FLY_PUBLIC_V4__ / __FLY_PUBLIC_V6__ placeholders below are
+; replaced by the actual Fly IPs (allocated via `fly ips allocate-v4` /
+; `allocate-v6`) at image-build time. The replacement is done by a sed
+; step in the Dockerfile so the deployed zone carries the real IPs
+; without committing them to git.
+;
+; To bump the SOA serial on every change, increment the YYYYMMDDNN below.
+; The ExDns zone validator (RFC 1982) refuses reloads where the serial
+; doesn't move forward.
+; ============================================================================
+
 $TTL 3600
 $ORIGIN elixir-dns-test.com.
-@   IN SOA ns1.elixir-dns-test.com. hostmaster.elixir-dns-test.com. ( 2026050601 7200 3600 1209600 3600 )
-    IN NS  ns1.elixir-dns-test.com.
+
+@   IN SOA ns1.elixir-dns-test.com. hostmaster.elixir-dns-test.com. (
+              2026050601 ; serial — bump on every change
+              7200       ; refresh
+              3600       ; retry
+              1209600    ; expire
+              3600 )     ; minimum
+
+; ----- Authoritative nameserver --------------------------------------------
+; Single NS for the test iteration. A second NS is graduation step 1
+; (see plans/fly_io_initial_deploy.md §9).
+
+    IN NS ns1.elixir-dns-test.com.
+
+; ----- Glue records --------------------------------------------------------
+; Required because ns1 lives inside the zone it serves. The IPv4 must
+; match the dedicated v4 you allocated with `fly ips allocate-v4`.
+
 ns1 IN A    __FLY_PUBLIC_V4__
 ns1 IN AAAA __FLY_PUBLIC_V6__
+
+; ----- Apex + www ----------------------------------------------------------
+
 @   IN A    __FLY_PUBLIC_V4__
 @   IN AAAA __FLY_PUBLIC_V6__
 www IN A    __FLY_PUBLIC_V4__
 www IN AAAA __FLY_PUBLIC_V6__
-api IN A    __FLY_PUBLIC_V4__
-docs IN A   __FLY_PUBLIC_V4__
+
+; ----- TXT — minimal signalling --------------------------------------------
+; Lets the external validation suite verify TXT round-trip. SPF says
+; "this domain doesn't send mail" — hardens against spoofing during the
+; test window when no real mail flows.
+
+@   IN TXT "v=spf1 -all"
+@   IN TXT "exdns-test iteration=1"
+
+; ----- CAA — restrict who can issue certs ----------------------------------
+; Let's Encrypt only, with iodef pointing at the operator. Tightens cert
+; issuance even before we have certs (graduation step 3).
+
+@   IN CAA 0 issue "letsencrypt.org"
+@   IN CAA 0 iodef "mailto:hostmaster@elixir-dns-test.com"
+
+; ----- Test fixtures for external validation -------------------------------
+; A handful of records the dnsperf queryfile in §7 of the deploy plan
+; exercises. Add more as the validation suite grows.
+
+api    IN A __FLY_PUBLIC_V4__
+docs   IN A __FLY_PUBLIC_V4__
 status IN A __FLY_PUBLIC_V4__
+
+; A wildcard so tests can probe wildcard-expansion handling.
+
 *.test IN A __FLY_PUBLIC_V4__

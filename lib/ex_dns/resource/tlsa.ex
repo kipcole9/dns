@@ -24,6 +24,45 @@ defmodule ExDns.Resource.TLSA do
 
   defstruct [:name, :ttl, :class, :cert_usage, :selector, :matching_type, :cert_data]
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds a TLSA record from a parser-produced keyword list.
+
+  ### Arguments
+
+  * `resource` is a keyword list with `:name`, optional
+    `:ttl` and `:class`, plus `:usage` (or `:cert_usage`),
+    `:selector`, `:matching_type`, and `:data` (or
+    `:cert_data`) — a hex string per RFC 6698.
+
+  ### Returns
+
+  * `{:ok, %ExDns.Resource.TLSA{}}` on success.
+
+  * `{:error, {:tlsa, keyword_list_with_errors}}` on
+    validation failure.
+
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> rename(:usage, :cert_usage)
+    |> rename(:data, :cert_data)
+    |> validate_integer(:ttl)
+    |> validate_integer(:cert_usage)
+    |> validate_integer(:selector)
+    |> validate_integer(:matching_type)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
+  defp rename(resource, from, to) do
+    case Keyword.pop(resource, from) do
+      {nil, _} -> resource
+      {value, rest} -> Keyword.put(rest, to, value)
+    end
+  end
+
   @impl ExDns.Resource
   def decode(
         <<cert_usage::size(8), selector::size(8), matching_type::size(8), cert_data::binary>>,

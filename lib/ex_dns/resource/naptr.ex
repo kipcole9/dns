@@ -36,6 +36,51 @@ defmodule ExDns.Resource.NAPTR do
 
   alias ExDns.Message
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds a NAPTR record from a parser-produced keyword list.
+
+  ### Arguments
+
+  * `resource` is a keyword list with `:name`, optional
+    `:ttl` and `:class`, plus `:order`, `:preference`,
+    `:flags`, `:services`, `:regexp` (last three are
+    quoted strings) and `:replacement` (a domain name or
+    `:root_domain`).
+
+  ### Returns
+
+  * `{:ok, %ExDns.Resource.NAPTR{}}` on success.
+
+  * `{:error, {:naptr, keyword_list_with_errors}}` on
+    validation failure.
+
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> coerce_naptr_strings()
+    |> validate_integer(:ttl)
+    |> validate_integer(:order)
+    |> validate_integer(:preference)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
+  defp coerce_naptr_strings(resource) do
+    resource
+    |> Enum.map(fn
+      {key, value} when key in [:flags, :services, :regexp] and is_list(value) ->
+        {key, List.to_string(value)}
+
+      {:replacement, :root_domain} ->
+        {:replacement, ""}
+
+      pair ->
+        pair
+    end)
+  end
+
   @impl ExDns.Resource
   def decode(<<order::size(16), preference::size(16), rest::binary>>, message) do
     {flags, rest} = decode_charstring(rest)

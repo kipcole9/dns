@@ -1,0 +1,17 @@
+; PTR-heavy reverse zone for 192.0.2.0/24 (RFC 5737 doc range).
+
+$TTL 86400
+$ORIGIN 2.0.192.in-addr.arpa.
+
+@ IN SOA ns.example.test. h.example.test. ( 2026050601 7200 3600 1209600 3600 )
+  IN NS  ns.example.test.
+
+1   IN PTR ns1.example.test.
+2   IN PTR ns2.example.test.
+10  IN PTR mail.example.test.
+20  IN PTR www.example.test.
+21  IN PTR www2.example.test.
+30  IN PTR mx.example.test.
+50  IN PTR vpn.example.test.
+100 IN PTR build.example.test.
+200 IN PTR backup.example.test.

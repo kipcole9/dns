@@ -1,0 +1,36 @@
+; A DNSSEC-signed apex with the usual companion records.
+; Values are deliberately fake — never validate this anywhere.
+
+$TTL 3600
+$ORIGIN signed.test.
+
+@   IN SOA ns.signed.test. h.signed.test. ( 1 7200 3600 1209600 3600 )
+    IN NS  ns.signed.test.
+ns  IN A   192.0.2.50
+
+; ----- DS at the apex (would normally live at the parent) ----
+
+@ IN DS 60485 5 1 2BB183AF5F22588179A53B0A98631FAD1A292118
+@ IN DS 60485 5 2 D4B7D520E7BB5F0F67674A0CCEB1E3E0614B93C4F9E99B8383F6A1E47469DA50
+
+; ----- DNSKEY (KSK 257, ZSK 256) -----------------------------
+
+@ IN DNSKEY 257 3 8 AwEAAcdYJxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+@ IN DNSKEY 256 3 8 AwEAAblahyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+
+; ----- CDS / CDNSKEY for automated DS provisioning -----------
+
+@ IN CDS 60485 5 1 2BB183AF5F22588179A53B0A98631FAD1A292118
+@ IN CDNSKEY 257 3 8 AwEAAcdYJxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+; ----- Signature over the apex SOA ---------------------------
+
+@ IN RRSIG SOA 13 2 3600 1234567890 1234560000 12345 signed.test. AAAAbase64ZZZZ==
+
+; ----- NSEC chain link ---------------------------------------
+
+@ IN NSEC b.signed.test. SOA NS DNSKEY DS RRSIG NSEC
+
+; ----- NSEC3 example (alternate DoE — both shouldn't appear in a real zone) ---
+
+@ IN NSEC3 1 0 10 ABCDEF B0123456789012345678901234567890 SOA NS RRSIG

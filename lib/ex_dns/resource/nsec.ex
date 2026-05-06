@@ -26,6 +26,29 @@ defmodule ExDns.Resource.NSEC do
 
   alias ExDns.Message
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds an NSEC record from a parser-produced keyword list.
+  Field renames: `:next_name` → `:next_domain`,
+  `:types` → `:type_bit_maps`.
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> rename(:next_name, :next_domain)
+    |> rename(:types, :type_bit_maps)
+    |> validate_integer(:ttl)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
+  defp rename(resource, from, to) do
+    case Keyword.pop(resource, from) do
+      {nil, _} -> resource
+      {value, rest} -> Keyword.put(rest, to, value)
+    end
+  end
+
   @impl ExDns.Resource
   def decode(rdata, message) do
     {:ok, next_domain, after_name} = Message.decode_name(rdata, message)

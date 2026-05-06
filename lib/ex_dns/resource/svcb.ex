@@ -31,6 +31,29 @@ defmodule ExDns.Resource.SVCB do
 
   alias ExDns.Message
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds an SVCB record from a parser-produced keyword list.
+  Header form only — `params` defaults to `[]`. Use the
+  HTTP API to set SvcParams.
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> coerce_target()
+    |> validate_integer(:ttl)
+    |> validate_integer(:priority)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
+  defp coerce_target(resource) do
+    Enum.map(resource, fn
+      {:target, :root_domain} -> {:target, ""}
+      pair -> pair
+    end)
+  end
+
   @impl ExDns.Resource
   def decode(<<priority::size(16), rest::binary>>, message) do
     {:ok, target, params_bytes} = Message.decode_name(rest, message)

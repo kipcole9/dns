@@ -23,6 +23,19 @@ defmodule ExDns.Resource.CDNSKEY do
 
   defstruct [:name, :ttl, :class, :flags, :protocol, :algorithm, :public_key]
 
+  import ExDns.Resource.Validation
+
+  @doc "Builds a CDNSKEY record from a parser-produced keyword list. Wire-identical to DNSKEY."
+  def new(resource) when is_list(resource) do
+    resource
+    |> validate_integer(:ttl)
+    |> validate_integer(:flags)
+    |> validate_integer(:protocol)
+    |> validate_integer(:algorithm)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
   @impl ExDns.Resource
   def decode(rdata, _message) do
     <<flags::size(16), protocol::size(8), algorithm::size(8), public_key::binary>> = rdata

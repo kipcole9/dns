@@ -35,6 +35,26 @@ defmodule ExDns.Resource.LOC do
     altitude: 0
   ]
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds a LOC record from a parser-produced keyword list
+  (integer-form only — see grammar comments).
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> validate_integer(:ttl)
+    |> validate_integer(:version)
+    |> validate_integer(:size)
+    |> validate_integer(:horiz_pre)
+    |> validate_integer(:vert_pre)
+    |> validate_integer(:latitude)
+    |> validate_integer(:longitude)
+    |> validate_integer(:altitude)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
   @impl ExDns.Resource
   def decode(
         <<version::size(8), size::size(8), horiz_pre::size(8), vert_pre::size(8),

@@ -1,0 +1,58 @@
+; ============================================================
+; example.test — BIND-style master zone with the conventional
+; license-header comment block, blank lines between sections,
+; and every record type an operator typically writes by hand.
+; ============================================================
+
+$TTL 3600
+$ORIGIN example.test.
+
+@   IN SOA ns1.example.test. hostmaster.example.test. (
+              2026050601 ; serial
+              7200       ; refresh
+              3600       ; retry
+              1209600    ; expire
+              3600 )     ; minimum
+
+; ----- Authoritative nameservers -----------------------------
+
+    IN NS  ns1.example.test.
+    IN NS  ns2.example.test.
+
+; ----- Glue --------------------------------------------------
+
+ns1 IN A    192.0.2.10
+ns2 IN A    192.0.2.11
+ns1 IN AAAA 2001:db8::10
+ns2 IN AAAA 2001:db8::11
+
+; ----- Apex + www --------------------------------------------
+
+@   IN A    192.0.2.20
+@   IN AAAA 2001:db8::20
+www IN A    192.0.2.20
+www IN AAAA 2001:db8::20
+
+; ----- Mail --------------------------------------------------
+
+@    IN MX 10 mail.example.test.
+@    IN MX 20 mail-backup.example.test.
+mail IN A 192.0.2.30
+
+; ----- Aliases -----------------------------------------------
+
+blog IN CNAME ghs.googlehosted.com.
+
+; ----- Service location --------------------------------------
+
+_xmpp-server._tcp IN SRV 10 0 5269 xmpp.example.test.
+
+; ----- TXT for various marker uses ---------------------------
+
+@               IN TXT "v=spf1 mx -all"
+_dmarc          IN TXT "v=DMARC1; p=quarantine; rua=mailto:dmarc@example.test"
+
+; ----- CAA (issuer authorisation) ----------------------------
+
+@ IN CAA 0 issue "letsencrypt.org"
+@ IN CAA 0 iodef "mailto:hostmaster@example.test"

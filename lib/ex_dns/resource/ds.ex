@@ -24,6 +24,23 @@ defmodule ExDns.Resource.DS do
 
   defstruct [:name, :ttl, :class, :key_tag, :algorithm, :digest_type, :digest]
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds a DS record from a parser-produced keyword list.
+  Field shape: `:key_tag`, `:algorithm`, `:digest_type`,
+  `:digest` (hex binary).
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> validate_integer(:ttl)
+    |> validate_integer(:key_tag)
+    |> validate_integer(:algorithm)
+    |> validate_integer(:digest_type)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
   @impl ExDns.Resource
   def decode(
         <<key_tag::size(16), algorithm::size(8), digest_type::size(8), digest::binary>>,

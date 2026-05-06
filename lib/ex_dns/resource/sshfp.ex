@@ -23,6 +23,34 @@ defmodule ExDns.Resource.SSHFP do
 
   defstruct [:name, :ttl, :class, :algorithm, :fp_type, :fingerprint]
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds an SSHFP record from a parser-produced keyword list.
+
+  ### Arguments
+
+  * `resource` is a keyword list with `:name`, optional
+    `:ttl` and `:class`, plus `:algorithm`, `:fp_type` and
+    `:fingerprint` (a hex string).
+
+  ### Returns
+
+  * `{:ok, %ExDns.Resource.SSHFP{}}` on success.
+
+  * `{:error, {:sshfp, keyword_list_with_errors}}` on
+    validation failure.
+
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> validate_integer(:ttl)
+    |> validate_integer(:algorithm)
+    |> validate_integer(:fp_type)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
   @doc """
   Decodes an SSHFP RDATA into a struct.
 

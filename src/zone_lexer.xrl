@@ -30,6 +30,21 @@ CNAME                   = CNAME
 SRV                     = SRV
 HINFO                   = HINFO
 URI                     = URI
+CAA                     = CAA
+DNAME                   = DNAME
+TLSA                    = TLSA
+SSHFP                   = SSHFP
+NAPTR                   = NAPTR
+SVCB                    = SVCB
+HTTPS                   = HTTPS
+LOC                     = LOC
+DS                      = DS
+DNSKEY                  = DNSKEY
+CDS                     = CDS
+CDNSKEY                 = CDNSKEY
+RRSIG                   = RRSIG
+NSEC                    = NSEC
+NSEC3                   = NSEC3
 
 Whitespace              = [\s]
 AtSign                  = \@
@@ -41,8 +56,9 @@ Newline                 = [\r\n][\s\r\n]*
 Hostname                = (\*|[a-zA-Z0-9\-]+)(\.(\*|[a-zA-Z0-9\-]+))*
 
 % A service is like a host name except that the first and second, or the second
-% and third labels start with a "_"
-Service                 = ((\*|[a-zA-Z0-9]+)\.)?(\_[a-zA-Z0-9]+)(\.\_[a-zA-Z0-9]+)?(\.([a-zA-Z0-9]+))*
+% and third labels start with a "_". Hyphens are allowed everywhere — real-world
+% names like `_xmpp-server._tcp` and `_mta-sts` carry them.
+Service                 = ((\*|[a-zA-Z0-9\-]+)\.)?(\_[a-zA-Z0-9\-]+)(\.\_[a-zA-Z0-9\-]+)?(\.([a-zA-Z0-9\-]+))*
 
 % A pathname on the file system
 Path                    = (\/|\.|\.\.|~\/)[a-zA-Z][0-9a-zA-Z]*(\/(\.|\.\.|[a-zA-Z][0-9a-zA-Z]))*
@@ -76,6 +92,22 @@ Rules.
 {SRV}                   : {token,{srv,TokenLine,strip(TokenChars)}}.
 {HINFO}                 : {token,{hinfo,TokenLine,TokenChars}}.
 {URI}                   : {token,{uri,TokenLine,TokenChars}}.
+{TXT}                   : {token,{txt,TokenLine,strip(TokenChars)}}.
+{CAA}                   : {token,{caa,TokenLine,strip(TokenChars)}}.
+{DNAME}                 : {token,{dname,TokenLine,strip(TokenChars)}}.
+{TLSA}                  : {token,{tlsa,TokenLine,strip(TokenChars)}}.
+{SSHFP}                 : {token,{sshfp,TokenLine,strip(TokenChars)}}.
+{NAPTR}                 : {token,{naptr,TokenLine,strip(TokenChars)}}.
+{SVCB}                  : {token,{svcb,TokenLine,strip(TokenChars)}}.
+{HTTPS}                 : {token,{https,TokenLine,strip(TokenChars)}}.
+{LOC}                   : {token,{loc,TokenLine,strip(TokenChars)}}.
+{DS}                    : {token,{ds,TokenLine,strip(TokenChars)}}.
+{DNSKEY}                : {token,{dnskey,TokenLine,strip(TokenChars)}}.
+{CDS}                   : {token,{cds,TokenLine,strip(TokenChars)}}.
+{CDNSKEY}               : {token,{cdnskey,TokenLine,strip(TokenChars)}}.
+{RRSIG}                 : {token,{rrsig,TokenLine,strip(TokenChars)}}.
+{NSEC3}                 : {token,{nsec3,TokenLine,strip(TokenChars)}}.
+{NSEC}                  : {token,{nsec,TokenLine,strip(TokenChars)}}.
 
 {Class}                 : {token,{class,TokenLine,TokenChars}}.
 {Dot}                   : {token,{dot,TokenLine,TokenChars}}.

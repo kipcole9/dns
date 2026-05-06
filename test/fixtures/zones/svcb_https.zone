@@ -1,0 +1,27 @@
+; SVCB / HTTPS records — header form only. SvcParams (alpn,
+; port, ipv4hint, etc) are added via the HTTP API, not via
+; the static-loader grammar; see plans/zone_parser_followups.md.
+
+$TTL 3600
+$ORIGIN svc.test.
+
+@   IN SOA ns.svc.test. h.svc.test. ( 1 7200 3600 1209600 3600 )
+    IN NS  ns.svc.test.
+ns  IN A   192.0.2.60
+
+; ----- AliasMode (priority 0, target points elsewhere) -------
+
+@ IN HTTPS 0 svc-alias.svc.test.
+
+; ----- ServiceMode (priority > 0; same owner as final) -------
+
+@ IN HTTPS 1 .
+
+; ----- SVCB for a non-HTTPS service --------------------------
+
+_proto._tcp IN SVCB 1 .
+
+; ----- A few targets for the alias to resolve to -------------
+
+svc-alias    IN A    192.0.2.61
+svc-alias    IN AAAA 2001:db8::61

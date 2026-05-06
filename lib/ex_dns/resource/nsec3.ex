@@ -33,6 +33,32 @@ defmodule ExDns.Resource.NSEC3 do
     :type_bit_maps
   ]
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds an NSEC3 record from a parser-produced keyword
+  list. Field renames: `:next_hash` → `:next_hashed_owner`,
+  `:types` → `:type_bit_maps`.
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> rename(:next_hash, :next_hashed_owner)
+    |> rename(:types, :type_bit_maps)
+    |> validate_integer(:ttl)
+    |> validate_integer(:hash_algorithm)
+    |> validate_integer(:flags)
+    |> validate_integer(:iterations)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
+  defp rename(resource, from, to) do
+    case Keyword.pop(resource, from) do
+      {nil, _} -> resource
+      {value, rest} -> Keyword.put(rest, to, value)
+    end
+  end
+
   @impl ExDns.Resource
   def decode(rdata, _message) do
     <<hash_algorithm::size(8), flags::size(8), iterations::size(16), salt_len::size(8),

@@ -27,6 +27,46 @@ defmodule ExDns.Resource.CAA do
 
   defstruct [:name, :ttl, :class, :flags, :tag, :value]
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds a CAA record from a parser-produced keyword list.
+
+  ### Arguments
+
+  * `resource` is a keyword list with `:name`, optional
+    `:ttl` and `:class`, plus `:flags` (integer 0–255),
+    `:tag` (binary) and `:value` (binary).
+
+  ### Returns
+
+  * `{:ok, %ExDns.Resource.CAA{}}` on success.
+
+  * `{:error, {:caa, keyword_list_with_errors}}` on
+    validation failure.
+
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> coerce_value()
+    |> validate_integer(:ttl)
+    |> validate_integer(:flags)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
+  # The lexer's `quoted_text` token carries an Erlang charlist;
+  # the tag rule does the same. Coerce both to binaries so the
+  # struct holds a well-typed value.
+  defp coerce_value(resource) do
+    resource
+    |> Enum.map(fn
+      {:value, v} when is_list(v) -> {:value, List.to_string(v)}
+      {:tag, v} when is_list(v) -> {:tag, List.to_string(v)}
+      pair -> pair
+    end)
+  end
+
   @doc """
   Decodes a CAA record's RDATA.
 

@@ -11,6 +11,7 @@ defmodule ExDns.Zone.File do
   def tokenize(string) when is_binary(string) do
     string
     |> remove_comments
+    |> strip_leading_whitespace
     |> flatten_parentheses
     |> append_newline
     |> String.to_charlist()
@@ -321,11 +322,57 @@ defmodule ExDns.Zone.File do
     end)
   end
 
-  # Comments are not passed through to the lexer or parser
+  # Strip RFC 1035 zone-file comments: a `;` outside a
+  # quoted string starts a comment that runs to end-of-line.
+  #
+  # Quote-awareness matters: `@ IN TXT "v=spf1; -all"` carries
+  # a literal `;` inside the TXT value, and the naive
+  # `String.replace(~r/;.*/, "")` truncates the quoted value
+  # mid-string, leaving the lexer with an unterminated `"` —
+  # which produces a parse error in some inputs and an
+  # infinite-loop hang in others (depending on how the
+  # remaining bytes interact with the leex backtracking).
+  #
+  # We walk byte-by-byte and only treat `;` as a comment
+  # introducer when not inside a `"..."` literal. RFC 1035
+  # §5.1 permits backslash-escaped `\"` inside quoted
+  # strings; we honour that.
   defp remove_comments(string) do
-    string
-    |> String.replace(~r/;.*/, "")
+    do_strip_comments(string, [], false)
   end
+
+  defp do_strip_comments(<<>>, acc, _in_quote?), do: IO.iodata_to_binary(Enum.reverse(acc))
+
+  # Inside a quote: `\"` is a literal `"`, plain `"` ends the quote, everything else is data.
+  defp do_strip_comments(<<?\\, c, rest::binary>>, acc, true) do
+    do_strip_comments(rest, [<<?\\, c>> | acc], true)
+  end
+
+  defp do_strip_comments(<<?", rest::binary>>, acc, true) do
+    do_strip_comments(rest, [?" | acc], false)
+  end
+
+  defp do_strip_comments(<<c, rest::binary>>, acc, true) do
+    do_strip_comments(rest, [c | acc], true)
+  end
+
+  # Outside a quote: `"` opens a quote, `;` starts a comment to EOL,
+  # `\n` keeps the line break (the parser needs it), everything else is data.
+  defp do_strip_comments(<<?", rest::binary>>, acc, false) do
+    do_strip_comments(rest, [?" | acc], true)
+  end
+
+  defp do_strip_comments(<<?;, rest::binary>>, acc, false) do
+    do_strip_comments(skip_to_newline(rest), acc, false)
+  end
+
+  defp do_strip_comments(<<c, rest::binary>>, acc, false) do
+    do_strip_comments(rest, [c | acc], false)
+  end
+
+  defp skip_to_newline(<<>>), do: <<>>
+  defp skip_to_newline(<<?\n, _::binary>> = rest), do: rest
+  defp skip_to_newline(<<_, rest::binary>>), do: skip_to_newline(rest)
 
   # A record (from the zone file) is considered in error if
   # it has an :errors property.  This property is a list of
@@ -355,5 +402,17 @@ defmodule ExDns.Zone.File do
   # assumes all lines are terminated with one
   defp append_newline(string) do
     string <> "\n"
+  end
+
+  # Strip leading whitespace + blank lines so the parser's
+  # start symbol (which expects a directive or record, not a
+  # `newline` token) sees the first real line.
+  #
+  # Conventional BIND zone files start with a license-header
+  # comment block — `remove_comments/1` turns those into blank
+  # lines, which without this step would crash the parser at
+  # line 1 with "syntax error before: \\n\\n\\n…".
+  defp strip_leading_whitespace(string) do
+    String.trim_leading(string)
   end
 end

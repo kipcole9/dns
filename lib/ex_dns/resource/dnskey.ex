@@ -24,6 +24,24 @@ defmodule ExDns.Resource.DNSKEY do
 
   defstruct [:name, :ttl, :class, :flags, :protocol, :algorithm, :public_key]
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds a DNSKEY record from a parser-produced keyword
+  list. The `:public_key` field carries the base64-encoded
+  key material as the operator typed it; downstream
+  signers/validators decode as needed.
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> validate_integer(:ttl)
+    |> validate_integer(:flags)
+    |> validate_integer(:protocol)
+    |> validate_integer(:algorithm)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
   @impl ExDns.Resource
   def decode(
         <<flags::size(16), protocol::size(8), algorithm::size(8), public_key::binary>>,

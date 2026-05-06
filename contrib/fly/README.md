@@ -148,41 +148,6 @@ in [`guides/04-delegating-your-domain.md`](../../guides/04-delegating-your-domai
 | Restart (drains gracefully) | `fly machine restart --app exdns-test` |
 | Scale memory | `fly scale memory 1024 --app exdns-test` |
 
-## Known parser limitation — TXT, CAA, blank lines
-
-The static zone-file loader currently:
-
-* **Doesn't accept TXT or CAA records.** Add these via
-  the HTTP API after deploy.
-* **Doesn't tolerate blank lines or comment-only lines
-  between records.** The shipped zone is therefore
-  packed with no whitespace; don't reformat unless
-  you want to debug the parser.
-
-Add TXT / CAA via the API once the server is running:
-
-```bash
-TOKEN=$(fly ssh console --app exdns-test -C \
-  "/opt/exdns/bin/exdnsctl token issue --role zone_admin --scopes '*'" \
-  | grep -E 'secret:' | awk '{print $2}')
-
-# SPF
-fly ssh console --app exdns-test -C "curl -sS -X POST \
-  -H 'authorization: Bearer ${TOKEN}' \
-  -H 'content-type: application/json' \
-  http://127.0.0.1:9571/api/v1/zones/elixir-dns-test.com/records \
-  -d '{\"name\":\"@\",\"type\":\"TXT\",\"ttl\":3600,\"data\":\"v=spf1 -all\"}'"
-
-# CAA
-fly ssh console --app exdns-test -C "curl -sS -X POST \
-  -H 'authorization: Bearer ${TOKEN}' \
-  -H 'content-type: application/json' \
-  http://127.0.0.1:9571/api/v1/zones/elixir-dns-test.com/records \
-  -d '{\"name\":\"@\",\"type\":\"CAA\",\"ttl\":3600,\"data\":{\"flags\":0,\"tag\":\"issue\",\"value\":\"letsencrypt.org\"}}'"
-```
-
-Tracking ticket: [`plans/zone_parser_followups.md`](../../plans/zone_parser_followups.md).
-
 ## Editing the zone after deploy
 
 Two paths:

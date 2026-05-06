@@ -23,6 +23,41 @@ defmodule ExDns.Resource.PTR do
 
   alias ExDns.Message
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds a PTR record from a parser-produced keyword list.
+
+  ### Arguments
+
+  * `resource` is a keyword list with `:name`, optional
+    `:ttl` and `:class`, plus either `:pointer` or `:server`
+    (the zone-file grammar uses `server`, callers wiring
+    this up directly may use `pointer`).
+
+  ### Returns
+
+  * `{:ok, %ExDns.Resource.PTR{}}` on success.
+
+  * `{:error, {:ptr, keyword_list_with_errors}}` on
+    validation failure.
+
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> rename(:server, :pointer)
+    |> validate_integer(:ttl)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
+  defp rename(resource, from, to) do
+    case Keyword.pop(resource, from) do
+      {nil, _} -> resource
+      {value, rest} -> Keyword.put(rest, to, value)
+    end
+  end
+
   @doc """
   Decodes a PTR record's RDATA into a struct.
 

@@ -15,6 +15,28 @@ defmodule ExDns.Resource.HTTPS do
 
   alias ExDns.Resource.SVCB
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds an HTTPS record from a parser-produced keyword
+  list. Header form only — see `ExDns.Resource.SVCB.new/1`.
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> coerce_target()
+    |> validate_integer(:ttl)
+    |> validate_integer(:priority)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
+  defp coerce_target(resource) do
+    Enum.map(resource, fn
+      {:target, :root_domain} -> {:target, ""}
+      pair -> pair
+    end)
+  end
+
   @impl ExDns.Resource
   def decode(rdata, message) do
     %SVCB{priority: priority, target: target, params: params} =

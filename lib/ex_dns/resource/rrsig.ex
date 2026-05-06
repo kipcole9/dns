@@ -43,6 +43,26 @@ defmodule ExDns.Resource.RRSIG do
   alias ExDns.Message
   alias ExDns.Resource
 
+  import ExDns.Resource.Validation
+
+  @doc """
+  Builds an RRSIG record from a parser-produced keyword list.
+  Operators rarely write these by hand; the field shape
+  matches the wire format directly.
+  """
+  def new(resource) when is_list(resource) do
+    resource
+    |> validate_integer(:ttl)
+    |> validate_integer(:algorithm)
+    |> validate_integer(:labels)
+    |> validate_integer(:original_ttl)
+    |> validate_integer(:signature_expiration)
+    |> validate_integer(:signature_inception)
+    |> validate_integer(:key_tag)
+    |> validate_class(:class, :internet)
+    |> structify_if_valid(__MODULE__)
+  end
+
   @impl Resource
   def decode(rdata, message) do
     <<type_covered::size(16), algorithm::size(8), labels::size(8), original_ttl::size(32),
